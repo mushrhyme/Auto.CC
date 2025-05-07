@@ -100,9 +100,9 @@ class FloatingSubtitleWindow(QMainWindow):
         """원문 표시 토글"""
         self.english_label.setVisible(show)
         if show:
-            self.resize(self.width(), 200)
+            self.resize(self.width(), 300)
         else:
-            self.resize(self.width(), 120)
+            self.resize(self.width(), 220)
     
     def mousePressEvent(self, event):
         """마우스 클릭 이벤트 - 드래그 시작"""

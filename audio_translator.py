@@ -12,6 +12,9 @@ import queue
 from datetime import datetime
 from pathlib import Path
 import backoff 
+import asyncio
+from PyQt5.QtCore import QTimer
+
 
 # Constants
 FORMAT = pyaudio.paInt16
@@ -100,7 +103,7 @@ class AudioTranslator:
                 with open(config_path, 'r') as f:
                     saved_config = json.load(f)
                     self.config.update(saved_config)
-                self.logger.debug("Configuration loaded from file")
+                # self.logger.debug("Configuration loaded from file")
             except Exception as e:
                 self.logger.error(f"Error loading config: {e}", exc_info=True)
         
@@ -129,10 +132,30 @@ class AudioTranslator:
         try:
             with open("config.json", 'w') as f:
                 json.dump(self.config, f, indent=2)
-            self.logger.debug("Configuration saved to file")
+            # self.logger.debug("Configuration saved to file")
         except Exception as e:
             self.logger.error(f"Error saving config: {e}", exc_info=True)
 
+    def find_virtual_audio_device(self):
+        """검색하여 Windows용 가상 오디오 장치 인덱스 찾기"""
+        p = pyaudio.PyAudio()
+        device_count = p.get_device_count()
+        virtual_device_index = None
+    
+        self.logger.info("\nSearching for virtual audio devices...")
+    
+        # 모든 장치 검색
+        for i in range(device_count):
+            device_info = p.get_device_info_by_index(i)
+            device_name = device_info.get('name', '').lower()
+            # VB-Cable 또는 Virtual Audio Cable 장치 찾기
+            if 'vb-cable' in device_name or 'virtual audio cable' in device_name:
+                virtual_device_index = i
+                self.logger.info(f"✅ Virtual audio device found: {device_info.get('name')} (device number: {i})")
+    
+        p.terminate()
+        return virtual_device_index    
+        
     def find_blackhole_device(self):
         """검색하여 가상 오디오 장치 인덱스 찾기"""
         p = pyaudio.PyAudio()
@@ -391,7 +414,7 @@ Translate the following English text into natural and fluent Korean while mainta
         # 현재 오디오 레벨 주기적으로 출력
         def log_audio_level(data):
             audio_level = self.get_audio_level(data)
-            self.logger.debug(f"Current audio level: {audio_level:.1f} (threshold: {self.silence_threshold})")
+            # self.logger.debug(f"Current audio level: {audio_level:.1f} (threshold: {self.silence_threshold})")
             if hasattr(self, 'gui_signals'):
                 self.gui_signals.audio_level_update.emit(audio_level)
         
@@ -539,48 +562,77 @@ Translate the following English text into natural and fluent Korean while mainta
 
     def set_gui_signals(self, signals):
         """GUI 신호 객체 설정"""
-        self.logger.debug("GUI 신호 객체 설정됨")
+        # self.logger.debug("GUI 신호 객체 설정됨")
         self.gui_signals = signals
+
+
+    
 
     def process_translation_result(self, translation, transcription, prev_translation, accumulated_text):
         """번역 결과 처리 및 GUI 업데이트"""
-        if not translation or not translation.strip() or translation == self.last_translation:
-            return prev_translation, accumulated_text  # 변경 없음
-            
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        new_accumulated = accumulated_text
         
-        # 계속된 발화 확인 (누적 길이가 최대 길이보다 작을 때만)
-        if prev_translation and translation.startswith(prev_translation) and len(accumulated_text) < MAX_SENTENCE_LENGTH:
-            new_text = translation[len(prev_translation):].strip()
+        def log_translation(self, timestamp, translation, transcription, new_text=None):
+            """번역 및 원문에 대한 로그 출력"""
             if new_text:
-                new_accumulated = accumulated_text + " " + new_text
                 self.logger.info(f"[{timestamp}] 추가: {new_text}")
-                self.logger.info(f"원문: {transcription}")
-                self.logger.debug(f"번역 추가: {new_text[:30]}...")
-        else:
-            # 새 문장 시작 (이전 문장이 너무 길거나 새로운 내용일 경우)
-            if len(accumulated_text) >= MAX_SENTENCE_LENGTH:
-                self.logger.info(f"\n[{timestamp}] 최대 길이 도달, 새 문장 시작:")
+                self.logger.debug(f"번역 추가: {new_text}")
             else:
-                self.logger.info(f"\n[{timestamp}] 번역:")
-                
-            new_accumulated = translation
-            self.logger.info(f"{translation}")
-            self.logger.info(f"원문: {transcription}")
-            self.logger.debug(f"새 번역: {translation[:30]}...")
+                self.logger.info(f"[{timestamp}] 번역:")
+                self.logger.info(f"{translation}")
+                self.logger.info(f"원문: {transcription}")
+                self.logger.debug(f"새 번역: {translation}")
+
+        # 새로운 번역 시작 시 초기화
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        # self.logger.info(f"\n[{timestamp}] 새로운 번역 시작")
+        # self.logger.info(f"초기화 전 prev_translation: {prev_translation}")
+        # self.logger.info(f"초기화 전 accumulated_text: {accumulated_text}")
         
+        # prev_translation과 accumulated_text 강제로 빈 문자열로 초기화
+        prev_translation = ""
+        accumulated_text = ""
+        
+        # self.logger.info(f"초기화 후 prev_translation: {prev_translation}")
+        # self.logger.info(f"초기화 후 accumulated_text: {accumulated_text}")
+        
+        if not translation or not translation.strip():
+            return prev_translation, accumulated_text  # 변경 없음
+
+        new_accumulated = accumulated_text
+
+        # 계속된 발화 확인 (누적 길이가 최대 길이보다 작을 때만)
+        if len(accumulated_text) < MAX_SENTENCE_LENGTH:
+            if prev_translation and translation.startswith(prev_translation):
+                new_text = translation[len(prev_translation):].strip()
+                if new_text:
+                    new_accumulated = accumulated_text + " " + new_text
+                    # log_translation(self, timestamp, translation, transcription, new_text)
+            else:
+                if len(accumulated_text) >= MAX_SENTENCE_LENGTH:
+                    self.logger.info(f"\n[{timestamp}] 최대 길이 도달, 새 문장 시작:")
+                # log_translation(self, timestamp, translation, transcription)
+
+                new_accumulated = translation
+
         # 결과 저장
         self.last_translation = new_accumulated
-        
+
         # GUI 신호 발송 (GUI 모드인 경우)
         if hasattr(self, 'gui_signals'):
             self.logger.debug(f"GUI 신호 발송: {timestamp}, 번역")
-            self.gui_signals.translation_update.emit(timestamp, new_accumulated, transcription)
-        else:
-            self.logger.debug("GUI 신호 객체가 설정되지 않았습니다.")
+            gui_message = f"(원문) {transcription}\n(번역) {new_accumulated}"
+            self.gui_signals.translation_update.emit(timestamp, gui_message, translation)
             
+            # # 비동기 방식이 아닌 QTimer를 사용하여 GUI 업데이트를 안전하게 처리
+            # def emit_signal():
+            #     self.gui_signals.translation_update.emit(timestamp, gui_message, translation)
+
+            # # QTimer를 사용해 이벤트 루프에 안전하게 GUI 신호 발송
+            # QTimer.singleShot(0, emit_signal)
+
+
         return translation, new_accumulated
+
 
     
     def process_translation_queue(self):
@@ -601,6 +653,8 @@ Translate the following English text into natural and fluent Korean while mainta
                 transcription = self.transcribe_audio(audio_file_path)
                 
                 if transcription and transcription.strip():
+                    # 터미널에 영어 원문 출력
+                    self.logger.info(f"📝 영어 원문: {transcription}")
                     translation = self.translate_text(transcription)
                     
                     if translation and translation.strip():
@@ -643,9 +697,9 @@ Translate the following English text into natural and fluent Korean while mainta
                 
                 try:
                     # 충분한 데이터가 있는 경우에만 처리 (약 1초마다)
-                    min_frames = int((RATE * 1.0) / CHUNK)
+                    min_frames = int((RATE * 0.5) / CHUNK)
                     if len(frames_copy) > min_frames:
-                        self.logger.debug(f"오디오 프레임 {len(frames_copy)}개 처리 중...")
+                        # self.logger.debug(f"오디오 프레임 {len(frames_copy)}개 처리 중...")
                         audio_file_path = self.save_audio_to_wav(frames_copy, channels=1)
                         transcription = self.transcribe_audio(audio_file_path)
                         
@@ -658,6 +712,7 @@ Translate the following English text into natural and fluent Korean while mainta
                                 prev_translation, accumulated_text = self.process_translation_result(
                                     translation, transcription, prev_translation, accumulated_text
                                 )
+                                # GUI 신호 발송 및 시간 측정
                             else:
                                 self.logger.debug("번역 결과가 없습니다.")
                         else:
@@ -674,7 +729,7 @@ Translate the following English text into natural and fluent Korean while mainta
 
     def start(self):
         """오디오 번역 시스템 시작"""
-        self.logger.info("macOS 시스템 오디오 캡처 및 번역 시작 중...")
+        self.logger.info("오디오 캡처 및 번역 시스템 시작 중...")
         self.logger.info(f"로그 파일 위치: {self.log_filename}")
         
         # API key 확인
@@ -683,11 +738,16 @@ Translate the following English text into natural and fluent Korean while mainta
             self.logger.error("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.", exc_info=True)
             return
         
-        # 가상 오디오 장치 자동 감지
-        blackhole_index = self.find_blackhole_device()
+        # OS에 따라 가상 오디오 장치 자동 감지
+        if os.name == 'nt':  # Windows
+            virtual_device_index = self.find_virtual_audio_device()
+            device_type = "VB-Cable 또는 Virtual Audio Cable"
+        else:  # macOS
+            virtual_device_index = self.find_blackhole_device()
+            device_type = "Blackhole 또는 Soundflower"
         
-        if blackhole_index is None:
-            self.logger.warning("\n⚠️ 가상 오디오 장치(Blackhole)를 찾을 수 없습니다.")
+        if virtual_device_index is None:
+            self.logger.warning(f"\n⚠️ 가상 오디오 장치({device_type})를 찾을 수 없습니다.")
             self.logger.info("시스템 오디오를 캡처하려면 가상 오디오 장치가 필요합니다.")
             self.logger.info("\n가상 장치 없이 계속하면 일반 마이크를 사용합니다.")
         
@@ -699,10 +759,10 @@ Translate the following English text into natural and fluent Korean while mainta
         
         self.logger.info("\n참고: 채널 문제로 오류가 발생하면 채널 수가 자동으로 조정됩니다.")
         
-        if blackhole_index is not None:
-            use_blackhole = input(f"\nBlackhole 장치를 사용하시겠습니까? (y/n, 기본값: y): ").strip().lower() or 'y'
-            if use_blackhole == 'y':
-                self.selected_device = blackhole_index
+        if virtual_device_index is not None:
+            use_virtual_device = input(f"\n{device_type} 장치를 사용하시겠습니까? (y/n, 기본값: y): ").strip().lower() or 'y'
+            if use_virtual_device == 'y':
+                self.selected_device = virtual_device_index
             else:
                 try:
                     device_index = int(input("\n사용할 오디오 입력 장치 번호 입력: ").strip())
@@ -716,7 +776,6 @@ Translate the following English text into natural and fluent Korean while mainta
                     self.selected_device = device_index
             except ValueError:
                 self.logger.warning("잘못된 입력입니다. 기본 마이크를 사용합니다.")
-        
         # 번역 모드 선택
         mode_selection = input(f"\n번역 모드를 선택하세요 (1: 실시간, 2: 발화 완료 후, 기본: {self.translation_mode}): ").strip()
         if mode_selection == "1":
