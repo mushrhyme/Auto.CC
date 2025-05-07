@@ -90,11 +90,11 @@ class FloatingSubtitleWindow(QMainWindow):
     
     def update_subtitle(self, translation, original_text=""):
         """자막 업데이트"""
-        print(f"자막 창 업데이트: {translation[:20]}...")
+   
         self.korean_label.setText(translation)
         if original_text:
             self.english_label.setText(original_text)
-        print(f"한국어 라벨 텍스트: {self.korean_label.text()[:20]}...")
+        print(f"{datetime.now().strftime('%H:%M:%S,%f')[:-3]} - DEBUG - 화면 출력: {self.korean_label.text()}")
     
     def toggle_original_text(self, show):
         """원문 표시 토글"""
@@ -280,10 +280,9 @@ class AudioTranslatorGUI(QMainWindow):
     @Slot(str, str, str)
     def on_translation_update(self, timestamp, translation, original):
         if hasattr(self, 'subtitle_window') and self.subtitle_window:
-            print("자막 창에 업데이트 중...")
+            # print("자막 창에 업데이트 중...")
             self.subtitle_window.update_subtitle(translation, original if self.show_original_checkbox.isChecked() else "")
-        else:
-            print("자막 창이 초기화되지 않았습니다!")
+
     
     @Slot(float)
     def on_audio_level_update(self, level):
