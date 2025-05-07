@@ -142,7 +142,7 @@ class AudioTranslator:
         device_count = p.get_device_count()
         virtual_device_index = None
     
-        self.logger.info("\nSearching for virtual audio devices...")
+        # self.logger.info("\nSearching for virtual audio devices...")
     
         # 모든 장치 검색
         for i in range(device_count):
@@ -162,7 +162,7 @@ class AudioTranslator:
         device_count = p.get_device_count()
         blackhole_index = None
         
-        self.logger.info("\nSearching for virtual audio devices...")
+        # self.logger.info("\nSearching for virtual audio devices...")
         
         # 모든 장치 검색
         for i in range(device_count):
@@ -171,7 +171,7 @@ class AudioTranslator:
             # Blackhole 또는 Soundflower 장치 찾기
             if 'blackhole' in device_name or 'soundflower' in device_name:
                 blackhole_index = i
-                self.logger.info(f"✅ Virtual audio device found: {device_info.get('name')} (device number: {i})")
+                # self.logger.info(f"✅ Virtual audio device found: {device_info.get('name')} (device number: {i})")
         
         p.terminate()
         return blackhole_index
@@ -231,7 +231,7 @@ class AudioTranslator:
             
             # 음성 감지 상태 업데이트
             if not self.voice_detected:
-                self.logger.info(f"\n✅  오디오 감지! Level: {audio_level:.1f}")
+                self.logger.info(f"✅ 발화 감지! Level: {audio_level:.1f}")
             self.voice_detected = True
             return True
         else:
@@ -239,7 +239,7 @@ class AudioTranslator:
             
             # 침묵 후 음성 감지 상태 재설정
             if self.silence_count > self.silence_chunks and self.voice_detected:
-                self.logger.info(f"\n⏳ 침묵 감지! Level: {audio_level:.1f}")
+                self.logger.info(f"✅ 발화 종료!")
                 self.voice_detected = False
             
             return False
@@ -361,13 +361,6 @@ Translate the following English text into natural and fluent Korean while mainta
             device_name = device_info.get('name', '').lower()
             is_blackhole = 'blackhole' in device_name or 'soundflower' in device_name
             
-            if is_blackhole:
-                self.logger.warning("\n⚠️ 현재 Blackhole/Soundflower 가상 오디오 장치를 사용 중입니다.")
-                self.logger.info("음성이 감지되지 않는다면:")
-                self.logger.info("1. 시스템 설정에서 오디오 출력이 Blackhole로 설정되어 있는지 확인하세요.")
-                self.logger.info("2. 재생 중인 오디오가 있는지 확인하세요.")
-                self.logger.info("3. 오디오 볼륨이 충분히 큰지 확인하세요.")
-            
             return is_blackhole
         except Exception as e:
             self.logger.error(f"장치 확인 중 오류 발생: {e}", exc_info=True)
@@ -383,21 +376,21 @@ Translate the following English text into natural and fluent Korean while mainta
                                                    p.get_default_input_device_info()['index'])
             
             # 장치 정보 로깅
-            self.logger.info("\n🎤 현재 오디오 입력 설정:")
-            self.logger.info(f"장치 이름: {device_info.get('name')}")
-            self.logger.info(f"입력 채널 수: {device_info.get('maxInputChannels')}")
-            self.logger.info(f"기본 샘플링 레이트: {int(device_info.get('defaultSampleRate'))}Hz")
+            # self.logger.info("\n🎤 현재 오디오 입력 설정:")
+            # self.logger.info(f"장치 이름: {device_info.get('name')}")
+            # self.logger.info(f"입력 채널 수: {device_info.get('maxInputChannels')}")
+            # self.logger.info(f"기본 샘플링 레이트: {int(device_info.get('defaultSampleRate'))}Hz")
             
             # Blackhole 체크
             if self.is_blackhole_device(device_index):
                 return
             
-            # 일반 마이크 사용 시 안내
-            self.logger.info("\n일반 마이크를 사용 중입니다.")
-            self.logger.info("음성이 감지되지 않는다면:")
-            self.logger.info("1. 마이크가 정상적으로 연결되어 있는지 확인하세요.")
-            self.logger.info("2. 시스템 설정에서 마이크 권한이 허용되어 있는지 확인하세요.")
-            self.logger.info("3. 시스템 설정에서 입력 장치가 올바르게 선택되어 있는지 확인하세요.")
+            # # 일반 마이크 사용 시 안내
+            # self.logger.info("\n일반 마이크를 사용 중입니다.")
+            # self.logger.info("음성이 감지되지 않는다면:")
+            # self.logger.info("1. 마이크가 정상적으로 연결되어 있는지 확인하세요.")
+            # self.logger.info("2. 시스템 설정에서 마이크 권한이 허용되어 있는지 확인하세요.")
+            # self.logger.info("3. 시스템 설정에서 입력 장치가 올바르게 선택되어 있는지 확인하세요.")
             
         except Exception as e:
             self.logger.error(f"오디오 입력 확인 중 오류 발생: {e}", exc_info=True)
@@ -487,7 +480,7 @@ Translate the following English text into natural and fluent Korean while mainta
         
         if device_index is not None:
             device_info = p.get_device_info_by_index(device_index)
-            self.logger.info(f"\n'{device_info.get('name')}' 장치를 사용합니다. 시스템 오디오 캡처를 시작합니다...")
+            # self.logger.info(f"\n'{device_info.get('name')}' 장치를 사용합니다. 시스템 오디오 캡처를 시작합니다...")
         else:
             self.logger.info("\n기본 마이크를 사용합니다.")
         
@@ -515,11 +508,11 @@ Translate the following English text into natural and fluent Korean while mainta
                 if volume_monitor_counter >= 80:  # 80 * 0.0625 = 5초
                     volume_monitor_counter = 0
                     # 모든 오디오 레벨을 로깅하도록 수정
-                    self.logger.info(f"현재 오디오 레벨: {audio_level:.1f} (임계값: {self.silence_threshold})")
-                    if audio_level > self.silence_threshold:
-                        self.logger.info("✅ 음성이 감지되었습니다!")
-                    else:
-                        self.logger.info("⏳ 음성이 감지되지 않았습니다.")
+                    # self.logger.info(f"현재 오디오 레벨: {audio_level:.1f} (임계값: {self.silence_threshold})")
+                    # if audio_level > self.silence_threshold:
+                    #     self.logger.info("✅ 음성이 감지되었습니다!")
+                    # else:
+                    #     self.logger.info("⏳ 음성이 감지되지 않았습니다.")
                 
                 # 버퍼에 데이터 추가
                 with self.buffer_lock:
@@ -531,8 +524,8 @@ Translate the following English text into natural and fluent Korean while mainta
                     speech_time_counter += 1
                     speech_detected_during_session = True
                     
-                    if speech_time_counter % 16 == 0:  # Show dots about every second
-                        print(".", end="", flush=True)
+                    # if speech_time_counter % 16 == 0:  # Show dots about every second
+                    #     print(".", end="", flush=True)
                 else:
                     silence_counter += 1
                 
@@ -654,7 +647,7 @@ Translate the following English text into natural and fluent Korean while mainta
                 
                 if transcription and transcription.strip():
                     # 터미널에 영어 원문 출력
-                    self.logger.info(f"📝 영어 원문: {transcription}")
+                    self.logger.info(f"✅ 번역 완료: {transcription[:30]}...")
                     translation = self.translate_text(transcription)
                     
                     if translation and translation.strip():
