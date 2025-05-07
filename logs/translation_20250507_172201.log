@@ -1,0 +1,39 @@
+2025-05-07 17:22:01,416 - INFO - 오디오 캡처 및 번역 처리 스레드 시작...
+2025-05-07 17:22:01,420 - INFO - 발화 완료 후에만 번역 결과가 표시됩니다.
+2025-05-07 17:22:01,978 - INFO - 
+🎤 현재 오디오 입력 설정:
+2025-05-07 17:22:02,155 - INFO - 장치 이름: Microsoft Sound Mapper - Input
+2025-05-07 17:22:02,160 - INFO - 입력 채널 수: 2
+2025-05-07 17:22:02,161 - INFO - 기본 샘플링 레이트: 44100Hz
+2025-05-07 17:22:02,162 - INFO - 
+일반 마이크를 사용 중입니다.
+2025-05-07 17:22:02,163 - INFO - 음성이 감지되지 않는다면:
+2025-05-07 17:22:02,173 - INFO - 1. 마이크가 정상적으로 연결되어 있는지 확인하세요.
+2025-05-07 17:22:02,174 - INFO - 2. 시스템 설정에서 마이크 권한이 허용되어 있는지 확인하세요.
+2025-05-07 17:22:02,178 - INFO - 3. 시스템 설정에서 입력 장치가 올바르게 선택되어 있는지 확인하세요.
+2025-05-07 17:22:03,961 - INFO - 장치 정보: 최대 입력 채널 = 2, 선택된 채널 = 1
+2025-05-07 17:22:03,992 - INFO - 오디오 스트림이 성공적으로 열렸습니다. 채널: 1
+2025-05-07 17:22:03,992 - INFO - 
+'Microsoft Sound Mapper - Input' 장치를 사용합니다. 시스템 오디오 캡처를 시작합니다...
+2025-05-07 17:22:03,994 - INFO - 현재 침묵 임계값: 200 (이 값 이상이면 오디오가 감지됨)
+2025-05-07 17:22:09,118 - INFO - 현재 오디오 레벨: 1.0 (임계값: 200)
+2025-05-07 17:22:09,120 - INFO - ⏳ 음성이 감지되지 않았습니다.
+2025-05-07 17:22:09,440 - INFO - 
+✅  오디오 감지! Level: 11766.8
+2025-05-07 17:22:14,238 - INFO - 현재 오디오 레벨: 167.5 (임계값: 200)
+2025-05-07 17:22:14,240 - INFO - ⏳ 음성이 감지되지 않았습니다.
+2025-05-07 17:22:16,217 - INFO - 
+⏳ 침묵 감지! Level: 1.0
+2025-05-07 17:22:18,162 - INFO - 📝 영어 원문: Now, when I first started in the industry, I started a company called Westwood Studios.
+2025-05-07 17:22:19,346 - ERROR - Error in translation processing: A coroutine object is required
+Traceback (most recent call last):
+  File "C:\Users\Nongshim\Desktop\Python\Auto.CC\audio_translator.py", line 666, in process_translation_queue
+    prev_translation, accumulated_text = self.process_translation_result(
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nongshim\Desktop\Python\Auto.CC\audio_translator.py", line 633, in process_translation_result
+    asyncio.run_coroutine_threadsafe(
+  File "C:\Users\Nongshim\miniconda3\envs\stt\Lib\asyncio\tasks.py", line 927, in run_coroutine_threadsafe
+    raise TypeError('A coroutine object is required')
+TypeError: A coroutine object is required
+2025-05-07 17:22:19,358 - INFO - 현재 오디오 레벨: 1.0 (임계값: 200)
+2025-05-07 17:22:19,367 - INFO - ⏳ 음성이 감지되지 않았습니다.
