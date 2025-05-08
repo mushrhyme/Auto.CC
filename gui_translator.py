@@ -94,7 +94,7 @@ class FloatingSubtitleWindow(QMainWindow):
         self.korean_label.setText(translation)
         if original_text:
             self.english_label.setText(original_text)
-        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} - INFO - ✅ 화면 출력   : {self.korean_label.text()}")
+        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} - INFO - ✅ 화면 출력: {self.korean_label.text()}")
     
     def toggle_original_text(self, show):
         """원문 표시 토글"""

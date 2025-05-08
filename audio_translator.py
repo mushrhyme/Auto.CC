@@ -14,12 +14,13 @@ from pathlib import Path
 import backoff 
 import asyncio
 from PyQt5.QtCore import QTimer
-
+import soundfile as sf 
+import aiohttp
 
 # Constants
 FORMAT = pyaudio.paInt16
 CHANNELS = 1  
-RATE = 16000  # 초당 수집하는 오디오 프레임 수: 높을수록 품질이 좋아지나 더 많은 데이터를 처리해야 함(16000 = Whisper 권장 샘플링 레이트)
+RATE = 8000  # 초당 수집하는 오디오 프레임 수: 높을수록 품질이 좋아지나 더 많은 데이터를 처리해야 함(16000 = Whisper 권장 샘플링 레이트)
 CHUNK = 1024 # 한 번에 처리하는 오디오 프레임 수:  작을수록 빠르게 처리되나 품질이 떨어질 수 있음
 SILENCE_THRESHOLD = 200 # 평균 진폭이 이 값 미만이면 침묵으로 판단 (기존 400에서 200으로 낮춤)
 SILENCE_DURATION = 1.5 # 침묵 지속 시간: 이 시간 동안 침묵이면 발화가 종료된 것으로 간주
@@ -274,26 +275,70 @@ class AudioTranslator:
         
         return temp_filename
 
+    # @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=3)
+    # def transcribe_audio(self, audio_file_path):
+    #     """오디오 파일을 텍스트로 변환 (오류 재시도 포함)"""
+    #     try:
+    #         # API 요청 헤더
+    #         headers = {
+    #             "Authorization": f"Bearer {self.api_key}"
+    #         }
+            
+    #         # 파일 전송
+    #         with open(audio_file_path, 'rb') as audio_file:
+    #             files = {
+    #                 'file': (os.path.basename(audio_file_path), audio_file, 'audio/wav'),
+    #                 'model': (None, 'whisper-1'),
+    #                 'language': (None, 'en'),
+    #                 'response_format': (None, 'json')
+    #             }
+                
+    #             response = requests.post(TRANSCRIPTION_URL, headers=headers, files=files)
+            
+    #         if response.status_code == 200:
+    #             result = response.json()
+    #             return result.get('text', '')
+    #         else:
+    #             self.logger.error(f"Transcription API error: {response.status_code}, {response.text}", exc_info=True)
+    #             return None
+    #     except Exception as e:
+    #         self.logger.error(f"Error during transcription: {e}", exc_info=True)
+    #         raise  # Backoff 재시도를 위해 다시 발생
+    #     finally:
+    #         # 임시 파일 삭제
+    #         try:
+    #             if tempfile.gettempdir() in audio_file_path and os.path.exists(audio_file_path):
+    #                 os.unlink(audio_file_path)
+    #         except Exception as e:
+    #             self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
+    
+
     @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=3)
     def transcribe_audio(self, audio_file_path):
-        """오디오 파일을 텍스트로 변환 (오류 재시도 포함)"""
+        """오디오 파일을 텍스트로 변환 (FLAC 압축 및 비동기 처리 포함)"""
         try:
+            # FLAC 포맷으로 변환
+            flac_file_path = audio_file_path.replace(".wav", ".flac")
+            with sf.SoundFile(audio_file_path) as wav_file:
+                data = wav_file.read(dtype='int16')
+                sf.write(flac_file_path, data, wav_file.samplerate, format='FLAC')
+
             # API 요청 헤더
             headers = {
                 "Authorization": f"Bearer {self.api_key}"
             }
-            
+
             # 파일 전송
-            with open(audio_file_path, 'rb') as audio_file:
+            with open(flac_file_path, 'rb') as audio_file:
                 files = {
-                    'file': (os.path.basename(audio_file_path), audio_file, 'audio/wav'),
+                    'file': (os.path.basename(flac_file_path), audio_file, 'audio/flac'),
                     'model': (None, 'whisper-1'),
                     'language': (None, 'en'),
                     'response_format': (None, 'json')
                 }
-                
+
                 response = requests.post(TRANSCRIPTION_URL, headers=headers, files=files)
-            
+
             if response.status_code == 200:
                 result = response.json()
                 return result.get('text', '')
@@ -306,11 +351,13 @@ class AudioTranslator:
         finally:
             # 임시 파일 삭제
             try:
-                if tempfile.gettempdir() in audio_file_path and os.path.exists(audio_file_path):
+                if os.path.exists(audio_file_path):
                     os.unlink(audio_file_path)
+                if os.path.exists(flac_file_path):
+                    os.unlink(flac_file_path)
             except Exception as e:
                 self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
-
+            
     @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=3)
     def translate_text(self, text):
         """영어 텍스트를 한국어로 번역 (오류 재시도 포함)"""
@@ -353,7 +400,66 @@ Translate the following English text into natural and fluent Korean while mainta
         except Exception as e:
             self.logger.error(f"Error during translation: {e}", exc_info=True)
             raise  # Backoff 재시도를 위해 다시 발생
+        
+    # async def translate_text_async(self, text):
+    #     """비동기 방식으로 영어 텍스트를 한국어로 번역"""
+    #     if not text or not text.strip():
+    #         return None
 
+    #     headers = {
+    #         "Authorization": f"Bearer {self.api_key}",
+    #         "Content-Type": "application/json"
+    #     }
+    #     data = {
+    #         "model": GPT_MODEL,
+    #         "messages": [
+    #             {"role": "system", "content": "You are a professional English to Korean translator."},
+    #             {"role": "user", "content": f"Translate this English text to Korean: \"{text}\""}
+    #         ]
+    #     }
+
+    #     async with aiohttp.ClientSession() as session:
+    #         async with session.post(TRANSLATION_URL, headers=headers, json=data) as response:
+    #             if response.status == 200:
+    #                 result = await response.json()
+    #                 if result.get('choices') and len(result['choices']) > 0:
+    #                     return result['choices'][0]['message']['content']
+    #             else:
+    #                 self.logger.error(f"Translation API error: {response.status}, {await response.text()}")
+    #     return None
+    
+    async def translate_text_async(self, text):
+        """긴 텍스트를 병렬로 번역"""
+        if not text or not text.strip():
+            return None
+
+        # 텍스트를 일정 길이로 분할
+        chunks = [text[i:i+100] for i in range(0, len(text), 100)]
+
+        async def translate_chunk(chunk):
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "model": GPT_MODEL,
+                "messages": [
+                    {"role": "user", "content": f"Translate this English text to Korean: \"{chunk}\""}
+                ]
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(TRANSLATION_URL, headers=headers, json=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    else:
+                        self.logger.error(f"Translation API error: {response.status}, {await response.text()}")
+                        return None
+
+        # 병렬로 번역 요청 실행
+        translations = await asyncio.gather(*(translate_chunk(chunk) for chunk in chunks))
+        return ' '.join(filter(None, translations))
+    
     def is_blackhole_device(self, device_index):
         """현재 선택된 장치가 Blackhole인지 확인"""
         if device_index is None:
@@ -632,8 +738,8 @@ Translate the following English text into natural and fluent Korean while mainta
 
 
     
-    def process_translation_queue(self):
-        """오디오 큐 처리 및 한국어로 번역"""
+    async def process_translation_queue(self):
+        """오디오 큐 처리 및 한국어로 번역 (비동기 처리)"""
         prev_translation = ""
         accumulated_text = ""
 
@@ -644,9 +750,10 @@ Translate the following English text into natural and fluent Korean while mainta
                     frames_copy, selected_channels = self.audio_queue.get(timeout=0.01)
                 except queue.Empty:
                     continue
+
                 # 발화 종료 후 오디오 처리 시작 시간 기록
                 processing_start_time = datetime.now()
-            
+
                 # 오디오 파일로 저장
                 self.logger.info(f"✅ 오디오 파일 저장 시작")
                 audio_file_path = self.save_audio_to_wav(frames_copy, channels=selected_channels)
@@ -656,7 +763,7 @@ Translate the following English text into natural and fluent Korean while mainta
                     transcribe_end_time = datetime.now()
                     duration = (transcribe_end_time - self.transcribe_start_time).total_seconds()
                     self.logger.info(f"✅ 발화 종료! 음성 수집 시간: {duration:.2f}초")
-                    
+
                 # 오디오 처리 시간 계산
                 processing_end_time = datetime.now()
                 processing_duration = (processing_end_time - processing_start_time).total_seconds()
@@ -668,7 +775,7 @@ Translate the following English text into natural and fluent Korean while mainta
 
                 if transcription and transcription.strip():
                     translation_start_time = datetime.now()  # 번역 시작 시간 기록
-                    translation = self.translate_text(transcription)
+                    translation = await self.translate_text_async(transcription)  # await 추가
 
                     if translation and translation.strip():
                         translation_end_time = datetime.now()  # 번역 종료 시간 기록
@@ -716,7 +823,7 @@ Translate the following English text into natural and fluent Korean while mainta
                 
                 try:
                     # 충분한 데이터가 있는 경우에만 처리 (약 1초마다)
-                    min_frames = int((RATE * 0.5) / CHUNK)
+                    min_frames = int((RATE * 1.5) / CHUNK)
                     if len(frames_copy) > min_frames:
                         # self.logger.debug(f"오디오 프레임 {len(frames_copy)}개 처리 중...")
                         audio_file_path = self.save_audio_to_wav(frames_copy, channels=1)
@@ -843,7 +950,6 @@ Translate the following English text into natural and fluent Korean while mainta
 
     def start_threads(self):
         """GUI 모드에서 사용할 스레드만 시작 (사용자 입력 없음)"""
-        # Threads 시작
         # 오디오 캡처 및 번역 처리를 위한 스레드 시작
         capture_thread = threading.Thread(
             target=self.audio_capture, 
@@ -851,24 +957,25 @@ Translate the following English text into natural and fluent Korean while mainta
             daemon=True,
             name="audio_capture_thread"
         )
-        
-        queue_thread = threading.Thread(
-            target=self.process_translation_queue, 
+        capture_thread.start()
+
+        # 비동기 번역 큐 처리
+        asyncio_thread = threading.Thread(
+            target=lambda: asyncio.run(self.process_translation_queue()),
             daemon=True,
             name="translation_queue_thread"
         )
-        
+        asyncio_thread.start()
+
         self.logger.info("오디오 캡처 및 번역 처리 스레드 시작...")
-        capture_thread.start()
-        queue_thread.start()
-        
+
         # 실시간 모드에서만 실시간 번역 스레드 시작
         if self.translation_mode == "realtime":
-            realtime_thread = realtime_thread = threading.Thread(
-            target=self.process_realtime, 
-            daemon=True,
-            name="realtime_translation_thread"
-        )
+            realtime_thread = threading.Thread(
+                target=self.process_realtime, 
+                daemon=True,
+                name="realtime_translation_thread"
+            )
             realtime_thread.start()
             self.logger.info("실시간 번역 업데이트가 활성화되었습니다.")
         else:
