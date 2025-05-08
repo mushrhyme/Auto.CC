@@ -26,8 +26,8 @@ SILENCE_THRESHOLD = 200 # 평균 진폭이 이 값 미만이면 침묵으로 판
 SILENCE_DURATION = 1.5 # 침묵 지속 시간: 이 시간 동안 침묵이면 발화가 종료된 것으로 간주
 REALTIME_UPDATE_INTERVAL = 1.0 # 실시간 번역 업데이트 간격: 음성이 진행 중일 때 현재까지 수집된 버퍼를 주기적으로 처리하여 중간 번역 결과를 보여주는 시간 간격
 MAX_SENTENCE_LENGTH = 50 # 최대 문장 길이 (자유롭게 조정 가능)
-GPT_MODEL = "gpt-3.5-turbo" # "gpt-4o-mini-2024-07-18"
-
+# GPT_MODEL = "gpt-3.5-turbo"  
+GPT_MODEL = "gpt-4o-mini-2024-07-18"
 # API endpoints
 TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 TRANSLATION_URL = "https://api.openai.com/v1/chat/completions"
@@ -434,7 +434,8 @@ Translate the following English text into natural and fluent Korean while mainta
             return None
 
         # 텍스트를 일정 길이로 분할
-        chunks = [text[i:i+100] for i in range(0, len(text), 100)]
+        size = 200
+        chunks = [text[i:i+size] for i in range(0, len(text), size)]
 
         async def translate_chunk(chunk):
             headers = {
