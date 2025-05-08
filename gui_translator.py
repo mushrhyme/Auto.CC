@@ -140,9 +140,8 @@ class AudioTranslatorGUI(QMainWindow):
         super().__init__()
         self.translator = translator
         self.setup_signals()
-        print("AudioTranslator에 GUI 신호 연결 중...")
+        # print("AudioTranslator에 GUI 신호 연결 중...")
         translator.set_gui_signals(self.signals)
-        print("신호 연결 완료!")
         
         self.setWindowTitle("오디오 번역기")
         self.setMinimumWidth(400)
@@ -259,14 +258,11 @@ class AudioTranslatorGUI(QMainWindow):
         view_menu.addAction(show_all_action)
     
     def setup_signals(self):
-        print("GUI 신호 객체 생성...")
         self.signals = TranslatorSignals()
-        print("신호 연결 중...")
         self.signals.translation_update.connect(self.on_translation_update)
         self.signals.audio_level_update.connect(self.on_audio_level_update)
         self.signals.status_update.connect(self.on_status_update)
         self.signals.voice_detected.connect(self.on_voice_detected)
-        print("신호 연결 완료!")
     
     def update_gui(self):
         if hasattr(self.translator, 'audio_frames') and self.translator.audio_frames:
