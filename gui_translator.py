@@ -66,7 +66,7 @@ class FloatingSubtitleWindow(QMainWindow):
         layout.addWidget(self.subtitle_frame)
         
         # 초기 크기 및 위치 (화면 하단 중앙)
-        self.resize(600, 150)
+        self.resize(600, 200)
         self.move_to_bottom()
         
         # 드래그 관련 변수
@@ -94,7 +94,7 @@ class FloatingSubtitleWindow(QMainWindow):
         self.korean_label.setText(translation)
         if original_text:
             self.english_label.setText(original_text)
-        print(f"{datetime.now().strftime('%H:%M:%S,%f')[:-3]} - DEBUG - 화면 출력: {self.korean_label.text()}")
+        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} - INFO - ✅ 화면 출력   : {self.korean_label.text()}")
     
     def toggle_original_text(self, show):
         """원문 표시 토글"""
