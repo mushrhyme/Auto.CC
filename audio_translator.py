@@ -644,7 +644,9 @@ Translate the following English text into natural and fluent Korean while mainta
                     frames_copy, selected_channels = self.audio_queue.get(timeout=0.01)
                 except queue.Empty:
                     continue
-
+                # 발화 종료 후 오디오 처리 시작 시간 기록
+                processing_start_time = datetime.now()
+            
                 # 오디오 파일로 저장
                 self.logger.info(f"✅ 오디오 파일 저장 시작")
                 audio_file_path = self.save_audio_to_wav(frames_copy, channels=selected_channels)
@@ -654,6 +656,11 @@ Translate the following English text into natural and fluent Korean while mainta
                     transcribe_end_time = datetime.now()
                     duration = (transcribe_end_time - self.transcribe_start_time).total_seconds()
                     self.logger.info(f"✅ 발화 종료! 음성 수집 시간: {duration:.2f}초")
+                    
+                # 오디오 처리 시간 계산
+                processing_end_time = datetime.now()
+                processing_duration = (processing_end_time - processing_start_time).total_seconds()
+                self.logger.info(f"✅ 오디오 처리 시간: {processing_duration:.2f}초")
 
                 # 번역 시작
                 self.logger.info(f"✅ 번역 시작")
