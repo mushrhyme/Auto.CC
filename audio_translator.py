@@ -231,6 +231,8 @@ class AudioTranslator:
             
             # 음성 감지 상태 업데이트
             if not self.voice_detected:
+                self.voice_start_time = datetime.now()  # 음성 시작 시간 기록
+                self.transcribe_start_time = self.voice_start_time
                 self.logger.info(f"✅ 발화 감지! Level: {audio_level:.1f}")
             self.voice_detected = True
             return True
@@ -239,7 +241,9 @@ class AudioTranslator:
             
             # 침묵 후 음성 감지 상태 재설정
             if self.silence_count > self.silence_chunks and self.voice_detected:
-                self.logger.info(f"✅ 발화 종료!")
+                # 발화 종료 로그 제거 (중복 방지)
+                self.voice_start_time = None
+                self.transcribe_start_time = None
                 self.voice_detected = False
             
             return False
@@ -632,7 +636,7 @@ Translate the following English text into natural and fluent Korean while mainta
         """오디오 큐 처리 및 한국어로 번역"""
         prev_translation = ""
         accumulated_text = ""
-        
+
         while self.is_running:
             try:
                 # 큐에서 데이터 가져오기
@@ -640,26 +644,41 @@ Translate the following English text into natural and fluent Korean while mainta
                     frames_copy, selected_channels = self.audio_queue.get(timeout=0.01)
                 except queue.Empty:
                     continue
-                
+
                 # 오디오 파일로 저장
+                self.logger.info(f"✅ 오디오 파일 저장 시작")
                 audio_file_path = self.save_audio_to_wav(frames_copy, channels=selected_channels)
+
+                # 발화 종료 시간 기록 및 로그 출력
+                if self.transcribe_start_time:
+                    transcribe_end_time = datetime.now()
+                    duration = (transcribe_end_time - self.transcribe_start_time).total_seconds()
+                    self.logger.info(f"✅ 발화 종료! 음성 수집 시간: {duration:.2f}초")
+
+                # 번역 시작
+                self.logger.info(f"✅ 번역 시작")
                 transcription = self.transcribe_audio(audio_file_path)
-                
+
                 if transcription and transcription.strip():
-                    # 터미널에 영어 원문 출력
-                    self.logger.info(f"✅ 번역 완료: {transcription[:30]}...")
+                    translation_start_time = datetime.now()  # 번역 시작 시간 기록
                     translation = self.translate_text(transcription)
-                    
+
                     if translation and translation.strip():
+                        translation_end_time = datetime.now()  # 번역 종료 시간 기록
+                        translation_duration = (translation_end_time - translation_start_time).total_seconds()
+                        self.logger.info(f"✅ 번역 종료! 번역 처리 시간: {translation_duration:.2f}초")
+
                         prev_translation, accumulated_text = self.process_translation_result(
                             translation, transcription, prev_translation, accumulated_text
                         )
-                            
+                        # 번역 결과 로깅
+                        self.logger.info(f"✅ 번역 결과: {translation.strip()}")
+
                 self.audio_queue.task_done()
-                
+
             except Exception as e:
                 self.logger.error(f"Error in translation processing: {e}", exc_info=True)
-
+                
     def process_realtime(self):
         """실시간 번역을 위한 현재 오디오 버퍼 처리"""
         self.logger.info("실시간 번역 스레드 시작")
