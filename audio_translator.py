@@ -26,7 +26,7 @@ SILENCE_THRESHOLD = 200 # 평균 진폭이 이 값 미만이면 침묵으로 판
 SILENCE_DURATION = 1.5 # 침묵 지속 시간: 이 시간 동안 침묵이면 발화가 종료된 것으로 간주
 REALTIME_UPDATE_INTERVAL = 1.0 # 실시간 번역 업데이트 간격: 음성이 진행 중일 때 현재까지 수집된 버퍼를 주기적으로 처리하여 중간 번역 결과를 보여주는 시간 간격
 MAX_SENTENCE_LENGTH = 50 # 최대 문장 길이 (자유롭게 조정 가능)
-GPT_MODEL = "gpt-4o-mini-2024-07-18"
+GPT_MODEL = "gpt-3.5-turbo" # "gpt-4o-mini-2024-07-18"
 
 # API endpoints
 TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
@@ -275,7 +275,7 @@ class AudioTranslator:
         
         return temp_filename
 
-    # @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=3)
+    # @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)
     # def transcribe_audio(self, audio_file_path):
     #     """오디오 파일을 텍스트로 변환 (오류 재시도 포함)"""
     #     try:
@@ -313,7 +313,7 @@ class AudioTranslator:
     #             self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
     
 
-    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=3)
+    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)
     def transcribe_audio(self, audio_file_path):
         """오디오 파일을 텍스트로 변환 (FLAC 압축 및 비동기 처리 포함)"""
         try:
@@ -358,7 +358,7 @@ class AudioTranslator:
             except Exception as e:
                 self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
             
-    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=3)
+    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)
     def translate_text(self, text):
         """영어 텍스트를 한국어로 번역 (오류 재시도 포함)"""
         if not text or not text.strip():
