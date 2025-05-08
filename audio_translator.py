@@ -357,76 +357,6 @@ class AudioTranslator:
                     os.unlink(flac_file_path)
             except Exception as e:
                 self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
-            
-    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)
-    def translate_text(self, text):
-        """영어 텍스트를 한국어로 번역 (오류 재시도 포함)"""
-        if not text or not text.strip():
-            return None
-        
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "model": GPT_MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": """
-You are a professional English to Korean translator.
-Translate the following English text into natural and fluent Korean while maintaining the original meaning, tone, and nuance. 
-"""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Translate this English text to Korean: \"{text}\""
-                    }
-                ]
-            }
-            
-            response = requests.post(TRANSLATION_URL, headers=headers, json=data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('choices') and len(result['choices']) > 0:
-                    return result['choices'][0]['message']['content']
-            else:
-                self.logger.error(f"Translation API error: {response.status_code}, {response.text}", exc_info=True)
-            
-            return None
-        except Exception as e:
-            self.logger.error(f"Error during translation: {e}", exc_info=True)
-            raise  # Backoff 재시도를 위해 다시 발생
-        
-    # async def translate_text_async(self, text):
-    #     """비동기 방식으로 영어 텍스트를 한국어로 번역"""
-    #     if not text or not text.strip():
-    #         return None
-
-    #     headers = {
-    #         "Authorization": f"Bearer {self.api_key}",
-    #         "Content-Type": "application/json"
-    #     }
-    #     data = {
-    #         "model": GPT_MODEL,
-    #         "messages": [
-    #             {"role": "system", "content": "You are a professional English to Korean translator."},
-    #             {"role": "user", "content": f"Translate this English text to Korean: \"{text}\""}
-    #         ]
-    #     }
-
-    #     async with aiohttp.ClientSession() as session:
-    #         async with session.post(TRANSLATION_URL, headers=headers, json=data) as response:
-    #             if response.status == 200:
-    #                 result = await response.json()
-    #                 if result.get('choices') and len(result['choices']) > 0:
-    #                     return result['choices'][0]['message']['content']
-    #             else:
-    #                 self.logger.error(f"Translation API error: {response.status}, {await response.text()}")
-    #     return None
     
     async def translate_text_async(self, text):
         """긴 텍스트를 병렬로 번역"""
@@ -794,64 +724,64 @@ Translate the following English text into natural and fluent Korean while mainta
             except Exception as e:
                 self.logger.error(f"Error in translation processing: {e}", exc_info=True)
                 
-    def process_realtime(self):
-        """실시간 번역을 위한 현재 오디오 버퍼 처리"""
-        self.logger.info("실시간 번역 스레드 시작")
-        prev_translation = ""
-        accumulated_text = ""
-        last_update_time = time.time()
+    # def process_realtime(self):
+    #     """실시간 번역을 위한 현재 오디오 버퍼 처리"""
+    #     self.logger.info("실시간 번역 스레드 시작")
+    #     prev_translation = ""
+    #     accumulated_text = ""
+    #     last_update_time = time.time()
         
-        while self.is_running:
-            # 실시간 모드가 아니면 스레드 종료
-            if self.translation_mode != "realtime":
-                self.logger.info("실시간 번역 모드 비활성화. 스레드 대기 중...")
-                time.sleep(1)
-                continue
+    #     while self.is_running:
+    #         # 실시간 모드가 아니면 스레드 종료
+    #         if self.translation_mode != "realtime":
+    #             self.logger.info("실시간 번역 모드 비활성화. 스레드 대기 중...")
+    #             time.sleep(1)
+    #             continue
 
-            current_time = time.time()
-            # 업데이트 간격에 따라 처리 (기본값: 1초)
-            if current_time - last_update_time < self.update_interval:
-                time.sleep(0.1)  # CPU 사용량 줄이기 위한 짧은 대기
-                continue
+    #         current_time = time.time()
+    #         # 업데이트 간격에 따라 처리 (기본값: 1초)
+    #         if current_time - last_update_time < self.update_interval:
+    #             time.sleep(0.1)  # CPU 사용량 줄이기 위한 짧은 대기
+    #             continue
             
-            last_update_time = current_time
+    #         last_update_time = current_time
             
-            # 음성이 감지된 경우에만 처리
-            if self.voice_detected:
-                self.logger.info("음성 감지됨, 실시간 처리 중...")
-                with self.buffer_lock:
-                    frames_copy = list(self.audio_frames) if self.audio_frames else []
+    #         # 음성이 감지된 경우에만 처리
+    #         if self.voice_detected:
+    #             self.logger.info("음성 감지됨, 실시간 처리 중...")
+    #             with self.buffer_lock:
+    #                 frames_copy = list(self.audio_frames) if self.audio_frames else []
                 
-                try:
-                    # 충분한 데이터가 있는 경우에만 처리 (약 1초마다)
-                    min_frames = int((RATE * 1.5) / CHUNK)
-                    if len(frames_copy) > min_frames:
-                        # self.logger.debug(f"오디오 프레임 {len(frames_copy)}개 처리 중...")
-                        audio_file_path = self.save_audio_to_wav(frames_copy, channels=1)
-                        transcription = self.transcribe_audio(audio_file_path)
+    #             try:
+    #                 # 충분한 데이터가 있는 경우에만 처리 (약 1초마다)
+    #                 min_frames = int((RATE * 1.5) / CHUNK)
+    #                 if len(frames_copy) > min_frames:
+    #                     # self.logger.debug(f"오디오 프레임 {len(frames_copy)}개 처리 중...")
+    #                     audio_file_path = self.save_audio_to_wav(frames_copy, channels=1)
+    #                     transcription = self.transcribe_audio(audio_file_path)
                         
-                        # 번역
-                        if transcription and transcription.strip():
-                            translation = self.translate_text(transcription)
+    #                     # 번역
+    #                     if transcription and transcription.strip():
+    #                         translation = self.translate_text(transcription)
                             
-                            # 번역 결과가 있으면 출력
-                            if translation and translation.strip():
-                                prev_translation, accumulated_text = self.process_translation_result(
-                                    translation, transcription, prev_translation, accumulated_text
-                                )
-                                # GUI 신호 발송 및 시간 측정
-                            else:
-                                self.logger.debug("번역 결과가 없습니다.")
-                        else:
-                            self.logger.debug("음성 인식 결과가 없습니다.")
-                    else:
-                        self.logger.debug(f"음성 프레임이 충분하지 않음: {len(frames_copy)}/{min_frames}")
-                except Exception as e:
-                    self.logger.error(f"실시간 번역 오류: {e}", exc_info=True)
-            else:
-                # 음성이 감지되지 않을 때는 간단한 로그만 출력
-                if time.time() % 5 < 0.1:  # 5초마다 한 번씩만 출력
-                    self.logger.info("음성 감지 대기 중...")
+    #                         # 번역 결과가 있으면 출력
+    #                         if translation and translation.strip():
+    #                             prev_translation, accumulated_text = self.process_translation_result(
+    #                                 translation, transcription, prev_translation, accumulated_text
+    #                             )
+    #                             # GUI 신호 발송 및 시간 측정
+    #                         else:
+    #                             self.logger.debug("번역 결과가 없습니다.")
+    #                     else:
+    #                         self.logger.debug("음성 인식 결과가 없습니다.")
+    #                 else:
+    #                     self.logger.debug(f"음성 프레임이 충분하지 않음: {len(frames_copy)}/{min_frames}")
+    #             except Exception as e:
+    #                 self.logger.error(f"실시간 번역 오류: {e}", exc_info=True)
+    #         else:
+    #             # 음성이 감지되지 않을 때는 간단한 로그만 출력
+    #             if time.time() % 5 < 0.1:  # 5초마다 한 번씩만 출력
+    #                 self.logger.info("음성 감지 대기 중...")
     
 
     def start(self):
