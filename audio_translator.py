@@ -53,8 +53,7 @@ class AudioTranslator:
         if not self.api_key:
             self.logger.error("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
             raise ValueError("OPENAI_API_KEY 환경 변수를 설정해주세요.")
-        else:
-            print(self.api_key)
+
     def setup_logging(self):
         """로깅 시스템 구성"""
         # 로그 파일 설정
@@ -239,7 +238,37 @@ class AudioTranslator:
             if not self.voice_detected:
                 self.voice_start_time = datetime.now()  # 음성 시작 시간 기록
                 self.transcribe_start_time = self.voice_start_time
-                self.logger.info(f"✅ 발화 감지! Level: {audio_level:.1f}")
+                self.logger.info(f"✅ 발화 감지! Level: {audio_level:.1f}")    
+                
+                # 감지된 언어를 업데이트
+                if hasattr(self, 'gui_signals'):
+                    try:
+                        # 최근 오디오 프레임을 텍스트로 변환
+                        with self.buffer_lock:
+                            frames_copy = list(self.audio_frames[-10:])  # 최근 10개의 프레임 복사
+                        if frames_copy:
+                            audio_file_path = self.save_audio_to_wav(frames_copy)
+                            transcription = self.transcribe_audio(audio_file_path)
+                            if transcription:
+                                detected_language = detect(transcription)  # 텍스트로 언어 감지
+                                detected_language = 'zh' if 'zh' in detected_language else detected_language
+                                language_map = {
+                                    "ko": "한국어",
+                                    "en": "영어",
+                                    "zh": "중국어",
+                                    "ja": "일본어"
+                                }
+                                language_name = language_map.get(detected_language, "알 수 없음")
+                                self.gui_signals.status_update.emit(f"{language_name}를 감지 중입니다...")
+                            else:
+                                self.gui_signals.status_update.emit("언어 감지 실패")
+                        else:
+                            self.gui_signals.status_update.emit("오디오 데이터 부족으로 언어 감지 실패")
+                    except Exception as e:
+                        self.logger.error(f"언어 감지 중 오류 발생: {e}", exc_info=True)
+                        self.gui_signals.status_update.emit("언어 감지 실패")
+
+                
             self.voice_detected = True
             return True
         else:
@@ -385,7 +414,9 @@ class AudioTranslator:
                     if response.status == 200:
                         result = await response.json()
                         result = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-                        result = re.sub(r'[“”"]', '', result)
+                        result = re.sub(r'[“”"「」]', '', result)
+                        result = result.replace("。", ".")
+                        print(target_lang, result)
                         return result.strip()
                     else:
                         self.logger.error(f"Translation API error: {response.status}, {await response.text()}")
@@ -404,7 +435,7 @@ class AudioTranslator:
                 target_languages = ['Chinese', 'Japanese', 'English']
             elif lang == 'ja':  # 일본어
                 target_languages = ['Korean', 'Chinese', 'English']
-            elif lang == 'zh':  # 중국어
+            elif 'zh' in lang:  # 중국어
                 target_languages = ['Korean', 'Japanese', 'English']
             elif lang == 'en':  # 영어
                 target_languages = ['Korean', 'Chinese', 'Japanese']
@@ -645,32 +676,30 @@ class AudioTranslator:
 
     
 
-    def process_translation_result(self, translation, transcription, prev_translation, accumulated_text):
+    def process_translation_result(self, translation, transcription, prev_translation, accumulated_text, speech_id):
         """번역 결과 처리 및 GUI 업데이트"""
         
-        # def log_translation(self, timestamp, translation, transcription, new_text=None):
-        #     """번역 및 원문에 대한 로그 출력"""
-        #     if new_text:
-        #         self.logger.info(f"[{timestamp}] 추가: {new_text}")
-        #         self.logger.debug(f"번역 추가: {new_text}")
-        #     else:
-        #         self.logger.info(f"[{timestamp}] 번역:")
-        #         self.logger.info(f"{translation}")
-        #         self.logger.info(f"원문: {transcription}")
-        #         self.logger.debug(f"새 번역: {translation}")
-
         # 새로운 번역 시작 시 초기화
         timestamp = datetime.now().strftime('%H:%M:%S')
-        # self.logger.info(f"\n[{timestamp}] 새로운 번역 시작")
-        # self.logger.info(f"초기화 전 prev_translation: {prev_translation}")
-        # self.logger.info(f"초기화 전 accumulated_text: {accumulated_text}")
         
         # prev_translation과 accumulated_text 강제로 빈 문자열로 초기화
         prev_translation = ""
         accumulated_text = ""
         
-        # self.logger.info(f"초기화 후 prev_translation: {prev_translation}")
-        # self.logger.info(f"초기화 후 accumulated_text: {accumulated_text}")
+        # 발화 ID를 기반으로 번역 결과를 관리
+        if not hasattr(self, 'translation_results'):
+            self.translation_results = {}
+
+        if speech_id not in self.translation_results:
+            self.translation_results[speech_id] = {
+                "prev_translation": "",
+                "accumulated_text": ""
+            }
+
+        # 현재 발화 ID에 대한 상태 가져오기
+        current_state = self.translation_results[speech_id]
+        prev_translation = current_state["prev_translation"]
+        accumulated_text = current_state["accumulated_text"]
         
         if not translation:
             return prev_translation, accumulated_text  # 변경 없음
@@ -683,30 +712,57 @@ class AudioTranslator:
                 new_text = translation[len(prev_translation):].strip()
                 if new_text:
                     new_accumulated = accumulated_text + " " + new_text
-                    # log_translation(self, timestamp, translation, transcription, new_text)
             else:
                 if len(accumulated_text) >= MAX_SENTENCE_LENGTH:
                     self.logger.info(f"\n[{timestamp}] 최대 길이 도달, 새 문장 시작:")
-                # log_translation(self, timestamp, translation, transcription)
-
                 new_accumulated = translation
 
         # 결과 저장
+        self.translation_results[speech_id]["prev_translation"] = translation
+        self.translation_results[speech_id]["accumulated_text"] = new_accumulated
         self.last_translation = new_accumulated
 
+        # 원문 언어 감지
+        try:
+            detected_language = detect(transcription)
+        except Exception as e:
+            self.logger.error(f"Language detection error: {e}", exc_info=True)
+            detected_language = "unknown"
+        
+        # GUI 메시지 구성
+        gui_message = {
+            "korean": "",
+            "english": "",
+            "chinese": "",
+            "japanese": ""
+        }
+
+        # 원문 언어에 따라 GUI 메시지에 배치
+        if detected_language == "ko":
+            gui_message["korean"] = transcription
+        elif detected_language == "en":
+            gui_message["english"] = transcription
+        elif "zh" in detected_language:
+            gui_message["chinese"] = transcription
+        elif detected_language == "ja":
+            gui_message["japanese"] = transcription
+        else:
+            self.logger.warning(f"Unsupported language detected: {detected_language}")
+
+        # 번역 결과 추가
+        gui_message["korean"] = gui_message["korean"] or translation.get("Korean", "")
+        gui_message["english"] = gui_message["english"] or translation.get("English", "")
+        gui_message["chinese"] = gui_message["chinese"] or translation.get("Chinese", "")
+        gui_message["japanese"] = gui_message["japanese"] or translation.get("Japanese", "")
+    
         # GUI 신호 발송 (GUI 모드인 경우)
         if hasattr(self, 'gui_signals'):
-            gui_message = {
-                "korean": transcription,
-                "english": translation.get("English", ""),
-                "chinese": translation.get("Chinese", ""),
-                "japanese": translation.get("Japanese", "")
-            }
             self.gui_signals.translation_update.emit(
                 timestamp,
                 json.dumps(gui_message),  # 딕셔너리를 JSON 문자열로 변환
                 transcription
             )
+
             # # 비동기 방식이 아닌 QTimer를 사용하여 GUI 업데이트를 안전하게 처리
             # def emit_signal():
             #     self.gui_signals.translation_update.emit(timestamp, gui_message, translation)
@@ -714,19 +770,22 @@ class AudioTranslator:
             # # QTimer를 사용해 이벤트 루프에 안전하게 GUI 신호 발송
             # QTimer.singleShot(0, emit_signal)
 
-        return translation                
+        # return translation                
              
     async def process_translation_queue(self):
         """오디오 큐 처리 및 번역 (비동기 처리)"""
         prev_translation = ""
         accumulated_text = ""
+        current_speech_id = 0  # 발화 ID
 
         while self.is_running:
             try:
                 # 큐에서 데이터 가져오기
                 try:
                     frames_copy, selected_channels = self.audio_queue.get(timeout=0.01)
+                    current_speech_id +=1
                 except queue.Empty:
+                    await asyncio.sleep(0.01)  # 비동기 대기
                     continue
 
                 # 발화 종료 후 오디오 처리 시작 시간 기록
@@ -753,22 +812,25 @@ class AudioTranslator:
 
                 if transcription and transcription.strip():
                     translation_start_time = datetime.now()  # 번역 시작 시간 기록
-                    translations = await self.translate_text_async(transcription)  # 번역 결과는 딕셔너리 형태
-
+                    translations = await self.translate_text_async(transcription)
+                    # translations = asyncio.run(self.translate_text_async(transcription))
+                    
                     if translations:  # 번역 결과가 딕셔너리인지 확인
                         translation_end_time = datetime.now()  # 번역 종료 시간 기록
                         translation_duration = (translation_end_time - translation_start_time).total_seconds()
                         self.logger.info(f"✅ 번역 종료! 번역 처리 시간: {translation_duration:.2f}초")
 
                         # 번역 결과를 처리
-                        prev_translation = self.process_translation_result(
-                            translations, transcription, prev_translation, accumulated_text
+                        self.process_translation_result(
+                            translations, transcription, prev_translation, accumulated_text, current_speech_id
                         )
 
                 self.audio_queue.task_done()
 
             except Exception as e:
                 self.logger.error(f"Error in translation processing: {e}", exc_info=True)
+                
+                
     # def process_realtime(self):
     #     """실시간 번역을 위한 현재 오디오 버퍼 처리"""
     #     self.logger.info("실시간 번역 스레드 시작")
