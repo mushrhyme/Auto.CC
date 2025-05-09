@@ -2,14 +2,12 @@ import sys
 import time
 from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, Signal, Slot, QObject
-from PySide6.QtGui import QFont, QAction, QKeySequence, QShortcut, QColor
+from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QLabel, QProgressBar, QComboBox, QSlider, QCheckBox, QFrame, QGridLayout
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QProgressBar, QSlider, QCheckBox, QFrame, QGridLayout
 )
 import json
-
-from PySide6.QtGui import QColor
 
 
 class TranslatorSignals(QObject):
@@ -156,6 +154,16 @@ class AudioTranslatorGUI(QMainWindow):
         # 설정 영역
         settings_layout = QVBoxLayout()
         
+        # 초기화 버튼 추가
+        self.reset_button = QPushButton("초기화")
+        self.reset_button.clicked.connect(self.reset_all)
+        settings_layout.addWidget(self.reset_button)
+        
+        main_layout.addLayout(settings_layout)
+        
+        self.setup_menu()
+        
+        
         # 음성 감지 임계값
         threshold_layout = QHBoxLayout()
         threshold_layout.addWidget(QLabel("음성 감지 임계값:"))
@@ -199,7 +207,6 @@ class AudioTranslatorGUI(QMainWindow):
         self.font_size_slider.valueChanged.connect(self.update_font_size)
         font_size_layout.addWidget(self.font_size_slider)
         settings_layout.addLayout(font_size_layout)
-        
         
         # 자막 높이 조절
         subtitle_height_layout = QHBoxLayout()
@@ -316,7 +323,31 @@ class AudioTranslatorGUI(QMainWindow):
             }
         """)
 
+    def reset_all(self):
+        """초기화 버튼을 눌렀을 때 호출되는 함수로 모든 작업을 중단하고 초기화"""
+        # 현재 음성 감지 상태 초기화
+        self.translator.voice_detected = False
+        self.translator.audio_frames.clear()  # 오디오 버퍼 초기화
+        self.translator.silence_threshold = 400  # 기본값으로 초기화
+        self.translator.silence_duration = 1.5  # 기본값으로 초기화
+        self.status_label.setText("초기화 완료. 음성을 다시 감지할 수 있습니다.")
+        self.status_label.setStyleSheet("font-weight: bold; color: #d9534f;")
+        
+        # 자막 창 업데이트
+        self.subtitle_window.update_subtitles({'korean': '', 'english': '', 'chinese': '', 'japanese': ''})
 
+        # 상태 바 리셋
+        self.level_bar.setValue(0)
+
+    def update_gui(self):
+        if hasattr(self.translator, 'audio_frames') and self.translator.audio_frames:
+            with self.translator.buffer_lock:
+                if len(self.translator.audio_frames) > 0:
+                    audio_level = self.translator.get_audio_level(self.translator.audio_frames[-1])
+                    self.signals.audio_level_update.emit(audio_level)
+        if hasattr(self.translator, 'voice_detected'):
+            self.signals.voice_detected.emit(self.translator.voice_detected)
+            
     def setup_menu(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("파일")
@@ -363,7 +394,12 @@ class AudioTranslatorGUI(QMainWindow):
     
     @Slot(str)
     def on_status_update(self, status):
+        """상태 업데이트 (감지된 언어 표시)"""
         self.status_label.setText(status)
+        if "감지 중입니다" in status:
+            self.status_label.setStyleSheet("font-weight: bold; color: #5cb85c;")
+        else:
+            self.status_label.setStyleSheet("font-weight: bold; color: black;")
     
     @Slot(bool)
     def on_voice_detected(self, detected):
