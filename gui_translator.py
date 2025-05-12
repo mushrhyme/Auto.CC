@@ -8,9 +8,9 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot, QObject
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QProgressBar, QSlider, QGridLayout
+    QLabel, QProgressBar, QSlider, QGridLayout, QMessageBox, QDialog
 )
-
+ 
 # ---------- SIGNAL DEFINITION ----------
 class TranslatorSignals(QObject):
     """각각의 이벤트 발생을 위한 Signal 정의"""
@@ -193,6 +193,8 @@ class AudioTranslatorGUI(QMainWindow):
         self.translator = translator
         self.signals = TranslatorSignals()
         self.translator.set_gui_signals(self.signals)
+        
+        self.is_testing_audio = False  # 테스트 상태 플래그 추가
 
         self.setWindowTitle("오디오 번역기")
         self.setMinimumWidth(400)
@@ -241,6 +243,12 @@ class AudioTranslatorGUI(QMainWindow):
         self.reset_button.clicked.connect(self.reset_all)
         layout.addWidget(self.reset_button)
 
+        # 침묵 감지 수준 자동 조정 버튼 추가
+    
+        self.auto_adjust_button = QPushButton("침묵 감지 자동 조정")
+        self.auto_adjust_button.clicked.connect(self.auto_adjust_silence_threshold)
+        layout.addWidget(self.auto_adjust_button)
+        
         layout.addLayout(self.create_labeled_slider(
             "음성 감지 임계값:", "threshold_slider", 100, 1000,
             self.translator.silence_threshold, self.update_threshold, "threshold_value_label"
@@ -251,12 +259,11 @@ class AudioTranslatorGUI(QMainWindow):
             int(self.translator.silence_duration * 10), self.update_silence_duration, "silence_duration_value_label"
         ))
 
+        # 자막 투명도/크기 조절
         layout.addLayout(self.create_slider_only("자막 투명도:", "opacity_slider", 10, 100, 85, self.update_subtitle_opacity))
         layout.addLayout(self.create_slider_only("자막 크기:", "font_size_slider", 8, 80, 14, self.update_font_size))
 
-        # 자막 크기 조절 (세로, 가로 슬라이더 한 줄에 배치)
         subtitle_size_layout = QHBoxLayout()
-
         # 높이 슬라이더
         subtitle_size_layout.addWidget(QLabel("자막 높이:"))
         self.subtitle_height_slider = QSlider(Qt.Horizontal)
@@ -304,6 +311,107 @@ class AudioTranslatorGUI(QMainWindow):
         layout.addWidget(slider)
         return layout
 
+    # ---------- 침묵 감지 수준 설정 ----------
+    def auto_adjust_silence_threshold(self):
+        """침묵 감지 임계값 자동 조정"""
+        self.adjustment_dialog = QDialog(self)
+        self.adjustment_dialog.setWindowTitle("침묵 감지 임계값 자동 조정")
+        self.adjustment_dialog.setModal(True)
+        self.adjustment_dialog.setFixedSize(300, 200)
+
+        layout = QVBoxLayout(self.adjustment_dialog)
+
+        self.dialog_label = QLabel("아래 버튼을 누르면 5초 동안 녹음을 시작합니다.\n")
+        self.dialog_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.dialog_label)
+
+        self.start_button = QPushButton("오디오 음량 측정")
+        self.start_button.clicked.connect(self.start_audio_test)
+        layout.addWidget(self.start_button)
+
+        self.countdown_label = QLabel("")
+        self.countdown_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.countdown_label)
+
+        self.adjustment_dialog.show()
+
+    def start_audio_test(self):
+        """음성 테스트 시작"""
+        self.start_button.setEnabled(False)  # 버튼 비활성화
+        self.dialog_label.setText("음성 테스트가 시작됩니다. 발화하세요!")
+        self.countdown_seconds = 5  # 카운트다운 시작 시간
+        self.countdown_label.setText(f"남은 시간: {self.countdown_seconds}초")
+
+        # 카운트다운 타이머 설정
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.timeout.connect(self.update_countdown)
+        self.countdown_timer.start(1000)  # 1초 간격
+
+        # 음성 레벨 측정을 위한 초기화
+        self._audio_levels = []
+        self._adjustment_timer = QTimer(self)
+        self._adjustment_timer.timeout.connect(self._collect_audio_levels)
+        self._adjustment_timer.start(100)  # 100ms 간격으로 오디오 레벨 수집 시작
+
+    def update_countdown(self):
+        """카운트다운 업데이트"""
+        self.countdown_seconds -= 1
+        if self.countdown_seconds > 0:
+            self.countdown_label.setText(f"남은 시간: {self.countdown_seconds}초")
+        else:
+            self.countdown_timer.stop()
+            self.countdown_label.setText("테스트 완료!")
+            self._adjustment_timer.stop()
+            self._finalize_silence_threshold_adjustment()
+
+            self.adjustment_dialog.accept()
+            self.show_adjustment_result()
+
+    def show_adjustment_result(self):
+        """결과를 팝업으로 표시"""
+        result_popup = QMessageBox(self)
+        result_popup.setWindowTitle("결과")
+        if self._audio_levels:
+            avg_level = sum(self._audio_levels) / len(self._audio_levels)
+            new_threshold = int(avg_level * 1.2)
+            self.translator.silence_threshold = new_threshold
+            self.threshold_slider.setValue(new_threshold)
+            self.threshold_value_label.setText(str(new_threshold))
+            result_popup.setText(f"임계값이 자동으로 조정되었습니다.\n새로운 임계값: {new_threshold}")
+            result_popup.setIcon(QMessageBox.Information)
+        else:
+            result_popup.setText("오디오 레벨을 감지하지 못했습니다. 다시 시도하세요.")
+            result_popup.setIcon(QMessageBox.Warning)
+        print(f"show_adjustment_result: is_testing_audio: {self.is_testing_audio}")
+        result_popup.exec()
+    
+    def _collect_audio_levels(self):
+        """오디오 레벨 수집"""
+        if hasattr(self.translator, 'audio_frames') and self.translator.audio_frames:
+            with self.translator.buffer_lock:
+                level = self.translator.get_audio_level(self.translator.audio_frames[-1])
+                self._audio_levels.append(level)
+
+    def _finalize_silence_threshold_adjustment(self):
+        """침묵 감지 임계값 자동 조정 완료"""
+        self.is_testing_audio = False
+        if hasattr(self, '_adjustment_timer') and self._adjustment_timer.isActive():
+            self._adjustment_timer.stop()
+
+        if self._audio_levels:
+            # 평균 레벨 계산 및 임계값 설정
+            avg_level = sum(self._audio_levels) / len(self._audio_levels)
+            new_threshold = int(avg_level * 1.2)  # 평균 레벨의 120%로 설정
+            self.translator.silence_threshold = new_threshold
+            self.threshold_slider.setValue(new_threshold)
+            self.threshold_value_label.setText(str(new_threshold))
+
+            self.status_label.setText("임계값이 자동으로 조정되었습니다.")
+            self.status_label.setStyleSheet("font-weight: bold; color: #5cb85c;")
+        else:
+            self.status_label.setText("오디오 레벨을 감지하지 못했습니다. 다시 시도하세요.")
+            self.status_label.setStyleSheet("font-weight: bold; color: #d9534f;")
+    
     # ---------- 시그널 연결 및 이벤트 처리 ----------
     def setup_signals(self):
         """시그널 연결 함수"""
@@ -344,13 +452,17 @@ class AudioTranslatorGUI(QMainWindow):
 
     def refresh_gui(self):
         """GUI 상태 업데이트 함수"""
+        # print(f"refresh_gui: is_testing_audio: {self.is_testing_audio}")
+        if self.is_testing_audio:  # 테스트 중이면 데이터 무시
+            return
+    
         if hasattr(self.translator, 'audio_frames') and self.translator.audio_frames:
             with self.translator.buffer_lock:
                 if self.translator.audio_frames:
                     level = self.translator.get_audio_level(self.translator.audio_frames[-1])
                     self.signals.audio_level_update.emit(level)
-        if hasattr(self.translator, 'voice_detected'):
-            self.signals.voice_detected.emit(self.translator.voice_detected)
+            if hasattr(self.translator, 'voice_detected'):
+                self.signals.voice_detected.emit(self.translator.voice_detected)
            
     # 상태 업데이트 관련 메서드 
     def update_threshold(self):
@@ -365,7 +477,6 @@ class AudioTranslatorGUI(QMainWindow):
         self.silence_duration_value_label.setText(f"{val:.1f}")
         self.translator.silence_duration = val
         self.translator.silence_chunks = int(val / self.translator.chunk_duration)
-        self.translator.save_config()
 
     def update_font_size(self):
         """자막 폰트 크기 업데이트 함수"""
@@ -388,11 +499,21 @@ class AudioTranslatorGUI(QMainWindow):
     @Slot()
     def on_translation_started(self):
         """번역 시작 시 진행 표시 바 시작"""
+        print(f"on_translation_started: is_testing_audio: {self.is_testing_audio}")
+        if self.is_testing_audio:  # 음성 테스트 중이면 번역 시작을 막음
+            print("Skipping translation started due to audio test.")  # 디버깅 로그
+            # self.is_testing_audio = False
+            return
         self.subtitle_window.start_translation_progress(estimated_duration=1.5)
 
     @Slot(str, str, str)
     def on_translation_update(self, timestamp, translation, original):
         """번역 업데이트 시 자막과 진행 표시 바 갱신"""
+        print(f"on_translation_update: is_testing_audio: {self.is_testing_audio}")
+        if self.is_testing_audio:  # 테스트 중이면 번역 무시
+            print("Skipping translation update during audio test.")  # 디버깅 로그
+            return
+        
         translations = json.loads(translation)
         self.subtitle_window.update_subtitles(translations)
 
@@ -483,9 +604,6 @@ class DummyTranslator:
 
     def set_gui_signals(self, signals):
         self.signals = signals
-
-    def save_config(self):
-        print("설정 저장됨")
 
 # ---------- ENTRY ----------
 def start_gui(translator):

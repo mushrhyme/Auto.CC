@@ -195,11 +195,15 @@ class AudioTranslator:
     def get_audio_level(audio_data):
         """오디오 데이터의 볼륨 레벨 계산"""
         if len(audio_data) == 0:
+            print("Audio data is empty.")  # 디버깅 로그 추가
             return 0
        
         # 더 효율적인 처리를 위해 numpy 배열로 변환
         normalized = np.abs(np.frombuffer(audio_data, dtype=np.int16))
-       
+        if len(normalized) == 0:
+            print("Normalized audio data is empty.")  # 디버깅 로그 추가
+            return 0
+
         # 더 나은 감지를 위해 상위 10% 샘플 사용
         sorted_samples = np.sort(normalized)
         top_samples = sorted_samples[int(len(sorted_samples) * 0.9):]
