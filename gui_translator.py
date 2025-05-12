@@ -327,9 +327,10 @@ class AudioTranslatorGUI(QMainWindow):
         self.status_label.setStyleSheet("color: #fff; font-weight: bold; background-color: #333; padding: 5px; border-radius: 5px;")
         self.level_bar.setStyleSheet("""
             QProgressBar { background-color: #2e2e2e; border-radius: 8px; }
-            QProgressBar::chunk { background-color: #3cb371; border-radius: 8px; }
+            QProgressBar::chunk { background-color: #5cb85c; border-radius: 8px; }
         """)
-
+        self.level_bar.setValue(1000) 
+        
     def reset_all(self):
         """초기화 버튼 클릭 시 호출되는 함수"""
         self.translator.voice_detected = False
@@ -398,24 +399,45 @@ class AudioTranslatorGUI(QMainWindow):
         # 번역 완료 처리
         QTimer.singleShot(1500, self.subtitle_window.complete_translation_progress)
 
-    # ---------- 오디오 레벨 및 음성 감지 ----------
+    # ---------- 오디오 레벨 및 음성 감지 ---------- 
     @Slot(float)
     def on_audio_level_update(self, level):
-        """오디오 레벨 업데이트 시 레벨 바 갱신"""
-        self.level_bar.setValue(int(level))
-        color = "#5cb85c" if level > self.translator.silence_threshold else "#d9534f"
-        self.level_bar.setStyleSheet(f"""
-            QProgressBar {{ background-color: #f0f0f0; border-radius: 2px; }}
-            QProgressBar::chunk {{ background-color: {color}; }}
-        """)
+        """오디오 레벨 업데이트 시 게이지바 갱신"""
+        if level > self.translator.silence_threshold:
+            # 발화 중: 빨간 게이지바가 차오름
+            if not self.translator.voice_detected:  # 발화 시작 시 상태 변경
+                self.translator.voice_detected = True
+            self.level_bar.setValue(int(level))
+            self.level_bar.setStyleSheet("""
+                QProgressBar { background-color: #2e2e2e; border-radius: 4px; }
+                QProgressBar::chunk { background-color: #d9534f; border-radius: 4px; }
+            """)
+            # 침묵 타이머 초기화
+            if hasattr(self, '_silence_timer') and self._silence_timer.isActive():
+                self._silence_timer.stop()
+        else:
+            # 발화 종료를 위한 짧은 침묵 허용
+            if self.translator.voice_detected:
+                if not hasattr(self, '_silence_timer'):
+                    self._silence_timer = QTimer()
+                    self._silence_timer.setSingleShot(True)
+                    self._silence_timer.timeout.connect(self._handle_silence_end)
+                if not self._silence_timer.isActive():
+                    self._silence_timer.start(int(self.translator.silence_duration * 1000))  # 침묵 지속 시간(ms)
 
-        # 자막창 게이지도 업데이트
-        self.subtitle_window.level_bar.setValue(int(level))
-        self.subtitle_window.level_bar.setStyleSheet(f"""
-            QProgressBar {{ background-color: #2e2e2e; border-radius: 4px; }}
-            QProgressBar::chunk {{ background-color: {color}; border-radius: 4px; }}
-        """)
+        # 자막창 게이지도 동일하게 업데이트
+        self.subtitle_window.level_bar.setValue(self.level_bar.value())
+        self.subtitle_window.level_bar.setStyleSheet(self.level_bar.styleSheet())
 
+    def _handle_silence_end(self):
+        """침묵 종료 처리"""
+        self.translator.voice_detected = False
+        self.level_bar.setValue(1000)
+        self.level_bar.setStyleSheet("""
+            QProgressBar { background-color: #2e2e2e; border-radius: 4px; }
+            QProgressBar::chunk { background-color: #5cb85c; border-radius: 4px; }
+        """)
+    
     # ---------- 상태 레이블 업데이트 ----------
     @Slot(str)
     def on_status_update(self, status):
