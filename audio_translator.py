@@ -26,9 +26,9 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1  
 RATE = 8000  # 초당 수집하는 오디오 프레임 수: 높을수록 품질이 좋아지나 더 많은 데이터를 처리해야 함(16000 = Whisper 권장 샘플링 레이트)
 CHUNK = 1024 # 한 번에 처리하는 오디오 프레임 수:  작을수록 빠르게 처리되나 품질이 떨어질 수 있음
-SILENCE_THRESHOLD = 200 # 평균 진폭이 이 값 미만이면 침묵으로 판단 (기존 400에서 200으로 낮춤)
+SILENCE_THRESHOLD = 1000 # 평균 진폭이 이 값 미만이면 침묵으로 판단 (기존 400에서 200으로 낮춤)
 SILENCE_DURATION = 1.5 # 침묵 지속 시간: 이 시간 동안 침묵이면 발화가 종료된 것으로 간주
-REALTIME_UPDATE_INTERVAL = 1.0 # 실시간 번역 업데이트 간격: 음성이 진행 중일 때 현재까지 수집된 버퍼를 주기적으로 처리하여 중간 번역 결과를 보여주는 시간 간격
+# REALTIME_UPDATE_INTERVAL = 1.0 # 실시간 번역 업데이트 간격: 음성이 진행 중일 때 현재까지 수집된 버퍼를 주기적으로 처리하여 중간 번역 결과를 보여주는 시간 간격
 MAX_SENTENCE_LENGTH = 50 # 최대 문장 길이 (자유롭게 조정 가능)
 TARGET_LANGUAGES = {
     'ko': ['Chinese', 'Japanese', 'English'],
@@ -38,6 +38,7 @@ TARGET_LANGUAGES = {
 }
 # GPT_MODEL = "gpt-3.5-turbo"  
 GPT_MODEL = "gpt-4o-mini-2024-07-18"
+
 # API endpoints
 TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 TRANSLATION_URL = "https://api.openai.com/v1/chat/completions"
@@ -53,7 +54,7 @@ class AudioTranslator:
         self.last_translation = ""
         self.audio_frames = []
         self.buffer_lock = threading.Lock()
-       
+        
         # API 키 초기화
         self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -97,33 +98,17 @@ class AudioTranslator:
         self.logger.addHandler(console_handler)
        
     def load_config(self):
-        """설정 파일에서 구성 로드 또는 기본값 설정"""
-        config_path = Path("config.json")
-       
+        """기본값 설정"""
         # 기본 설정
         self.config = {
             "silence_threshold": SILENCE_THRESHOLD,
             "silence_duration": SILENCE_DURATION,
             "preferred_device": 0,  # 기본 장치 인덱스
-            "update_interval": REALTIME_UPDATE_INTERVAL,
-            "translation_mode": "complete"
         }
-       
-        # 파일에서 설정 로드
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as f:
-                    saved_config = json.load(f)
-                    self.config.update(saved_config)
-                # self.logger.debug("Configuration loaded from file")
-            except Exception as e:
-                self.logger.error(f"Error loading config: {e}", exc_info=True)
-       
+        
         # 기존 설정 로드 시도
         self.silence_threshold = self.config["silence_threshold"]
         self.silence_duration = self.config["silence_duration"]
-        self.update_interval = self.config["update_interval"]
-        self.translation_mode = self.config["translation_mode"]
         self.selected_device = self.config["preferred_device"]  # 추가: selected_device 설정
        
         # 설정에서 변수 설정
@@ -137,8 +122,6 @@ class AudioTranslator:
         self.config["silence_threshold"] = self.silence_threshold
         self.config["silence_duration"] = self.silence_duration
         self.config["preferred_device"] = self.selected_device
-        self.config["update_interval"] = self.update_interval
-        self.config["translation_mode"] = self.translation_mode
        
         # 파일 저장
         try:
@@ -233,6 +216,10 @@ class AudioTranslator:
                         if frames_copy:
                             audio_file_path = self.save_audio_to_wav(frames_copy)
                             transcription = self.transcribe_audio(audio_file_path)
+                            if transcription is None:
+                                self.logger.info("발화가 너무 짧아 번역 요청을 하지 않습니다.")
+                                return False  # 번역 중단
+                            
                             if transcription:
                                 detected_language = detect(transcription)  # 텍스트로 언어 감지
                                 detected_language = 'zh' if 'zh' in detected_language else detected_language
@@ -293,12 +280,19 @@ class AudioTranslator:
        
         return temp_filename
 
-    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)
+    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)    
     def transcribe_audio(self, audio_file_path):
         """오디오 파일을 텍스트로 변환"""
         try:
             flac_file_path = self._convert_to_flac(audio_file_path)
-            return self._call_transcription_api(flac_file_path)
+            transcription = self._call_transcription_api(flac_file_path)
+            print(transcription)
+            # 발화 길이 확인 (최소 길이: 5자)
+            if transcription and len(transcription.strip()) < 5:
+                self.logger.info(f"발화가 너무 짧아 번역을 건너뜁니다: '{transcription}'")
+                return None
+            
+            return transcription
         except Exception as e:
             self.logger.error(f"Error during transcription: {e}", exc_info=True)
             raise
@@ -421,7 +415,8 @@ class AudioTranslator:
                         self.audio_frames.append(data)
 
                     # 음성 감지 확인
-                    if self.should_transcribe(audio_level):
+                    voice_detect = self.should_transcribe(audio_level)
+                    if voice_detect:
                         silence_counter = 0
                         speech_detected_during_session = True
                     else:
@@ -492,6 +487,10 @@ class AudioTranslator:
                     return None
     
     # ---------- 번역 처리 ----------
+    def update_target_languages(self, selected_languages):
+        """선택된 언어에 따라 번역 대상 언어를 업데이트"""
+        self.target_languages = selected_languages
+        
     async def translate_text_async(self, text, size=200):
         """텍스트를 청크로 나누어 비동기 번역"""
         if not text or not text.strip():
@@ -623,7 +622,6 @@ class AudioTranslator:
         gui_message["japanese"] = gui_message["japanese"] or translation.get("Japanese", "")
         return gui_message
 
- 
     async def process_translation_queue(self):
         """번역 큐 처리"""
         current_speech_id = 0
@@ -664,18 +662,14 @@ class AudioTranslator:
         
         # 음성 추출
         transcription = self.transcribe_audio(audio_file_path)
-        if not transcription:
+        if transcription is None:
             return
 
         # 번역 처리
-        translation_start = datetime.now()
         translations = await self._perform_translation(transcription)
-        translation_end = datetime.now()
         if translations:
-            duration = (translation_end - translation_start).total_seconds()
-            self.logger.info(f"✅ 번역 종료! 번역 처리 시간: {duration:.2f}초")
             self.process_translation_result(translations, transcription, "", "", speech_id)
-
+            
     async def _perform_translation(self, transcription):
         """텍스트 번역 수행"""
         translation_start = datetime.now()
