@@ -288,7 +288,7 @@ class AudioTranslator:
             transcription = self._call_transcription_api(flac_file_path)
             print(transcription)
             # 발화 길이 확인 (최소 길이: 5자)
-            if transcription and len(transcription.strip()) < 5:
+            if transcription and len(transcription.strip()) < 3:
                 self.logger.info(f"발화가 너무 짧아 번역을 건너뜁니다: '{transcription}'")
                 return None
             
@@ -525,7 +525,14 @@ class AudioTranslator:
             "Content-Type": "application/json"
         }
         prompt = f'Translate to {target_lang}: "{chunk}"'
-        data = {"model": GPT_MODEL, "messages": [{"role": "user", "content": prompt}]}
+        data = {
+            "model": GPT_MODEL, 
+            "messages": [
+                {"role": "system", 
+                 "content": "You are a translator. Only provide the translation without any explanation."},
+                {"role": "user", "content": f"Translate to {target_lang}:\n{chunk}"},
+                ]
+            }
 
         async with aiohttp.ClientSession() as session:
             async with session.post(TRANSLATION_URL, headers=headers, json=data) as resp:

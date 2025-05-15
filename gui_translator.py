@@ -2,7 +2,7 @@ import sys
 import time
 import json
 from datetime import datetime
-from threading import Lock
+from threading import Thread
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot, QObject
 from PySide6.QtGui import QFont, QAction
@@ -308,7 +308,7 @@ class AudioTranslatorGUI(QMainWindow):
 
         self.main_layout.addLayout(self.create_status_layout())
         self.main_layout.addLayout(self.create_settings_layout())
-
+        
     def create_status_layout(self):
         """상태 표시 레이아웃 생성"""
         layout = QHBoxLayout()
@@ -609,7 +609,7 @@ class AudioTranslatorGUI(QMainWindow):
         self.translator.audio_frames.clear()
         self.translator.silence_count = 0
         self.translator.last_translation = ""
-        self.translator.is_running = True
+        self.translator.is_running = True # 음성 캡처 루프 활성화
         
         # GUI 상태 초기화
         self.status_label.setText("초기화 완료. 음성을 다시 감지할 수 있습니다.")
@@ -621,8 +621,11 @@ class AudioTranslatorGUI(QMainWindow):
         
         # 음성 캡처 루프 재시작
         if hasattr(self.translator, 'audio_capture'):
-            threading.Thread(target=self.translator.audio_capture, daemon=True).start()
-        
+            Thread(target=self.translator.audio_capture, daemon=True).start()
+        else:
+            self.status_label.setText("오류: 음성 캡처 루프를 시작할 수 없습니다.")
+            self.status_label.setStyleSheet("font-weight: bold; color: #d9534f;")
+            
     def refresh_gui(self):
         """GUI 상태 업데이트 함수"""
         if hasattr(self.translator, 'audio_frames') and self.translator.audio_frames:
@@ -763,24 +766,6 @@ class AudioTranslatorGUI(QMainWindow):
         self.close_application()
         event.accept()
 
-# ---------- DUMMY TRANSLATOR FOR TEST ----------
-class DummyTranslator:
-    
-    def __init__(self):
-        self.silence_threshold = 400
-        self.silence_duration = 1.5
-        self.translation_mode = "realtime"
-        self.audio_frames = []
-        self.voice_detected = False
-        self.chunk_duration = 0.064
-        self.buffer_lock = Lock()
-
-    def get_audio_level(self, data):
-        return 300.0  # 예시 볼륨
-
-    def set_gui_signals(self, signals):
-        self.signals = signals
-
 # ---------- ENTRY ----------
 def start_gui(translator):
     app = QApplication(sys.argv)
@@ -788,6 +773,25 @@ def start_gui(translator):
     window.show()
     sys.exit(app.exec())
 
-if __name__ == "__main__":
-    dummy = DummyTranslator()
-    start_gui(dummy)
+
+# # ---------- DUMMY TRANSLATOR FOR TEST ----------
+# class DummyTranslator:
+    
+#     def __init__(self):
+#         self.silence_threshold = 400
+#         self.silence_duration = 1.5
+#         self.translation_mode = "realtime"
+#         self.audio_frames = []
+#         self.voice_detected = False
+#         self.chunk_duration = 0.064
+#         self.buffer_lock = Lock()
+
+#     def get_audio_level(self, data):
+#         return 300.0  # 예시 볼륨
+
+#     def set_gui_signals(self, signals):
+#         self.signals = signals
+        
+# if __name__ == "__main__":
+#     dummy = DummyTranslator()
+#     start_gui(dummy)
