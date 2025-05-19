@@ -7,6 +7,7 @@ import queue
 import wave
 import asyncio
 import logging
+import random
 import tempfile
 import threading
 from datetime import datetime
@@ -42,19 +43,21 @@ GPT_MODEL = "gpt-4o-mini-2024-07-18"
 # API endpoints
 TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 TRANSLATION_URL = "https://api.openai.com/v1/chat/completions"
-
+# 172.17.17.82:8080
 class AudioTranslator:
     def __init__(self):
         self.setup_logging()
         self.load_config()
+        self.translation_mode = "normal" 
         self.audio_queue = queue.Queue()
         self.is_running = True
         self.voice_detected = False
         self.silence_count = 0
+        self.update_interval = 1.0
         self.last_translation = ""
         self.audio_frames = []
         self.buffer_lock = threading.Lock()
-        
+        self._pending_end_of_speech = None 
         # API 키 초기화
         self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -115,21 +118,6 @@ class AudioTranslator:
         self.chunk_duration = CHUNK / RATE
         self.silence_chunks = int(self.silence_duration / self.chunk_duration)
         self.min_volume_for_display = 200
-
-    def save_config(self):
-        """현재 값으로 설정 파일 업데이트"""
-        # 현재 값으로 설정 업데이트
-        self.config["silence_threshold"] = self.silence_threshold
-        self.config["silence_duration"] = self.silence_duration
-        self.config["preferred_device"] = self.selected_device
-       
-        # 파일 저장
-        try:
-            with open("config.json", 'w') as f:
-                json.dump(self.config, f, indent=2)
-            # self.logger.debug("Configuration saved to file")
-        except Exception as e:
-            self.logger.error(f"Error saving config: {e}", exc_info=True)
 
     # ---------- 오디오 장치 관리 ----------
     def list_audio_devices(self):
@@ -248,6 +236,10 @@ class AudioTranslator:
             # 침묵 후 음성 감지 상태 재설정
             if self.silence_count > self.silence_chunks and self.voice_detected:
                 # 발화 종료 로그 제거 (중복 방지)
+                self.logger.info("✅ [실시간] 발화가 완전히 종료되었습니다!")
+                if hasattr(self, 'gui_signals'):
+                    # 파란색 표시를 위한 태그 추가
+                    self.gui_signals.status_update.emit("[blue][실시간] 발화가 완전히 종료되었습니다!")
                 self.voice_start_time = None
                 self.transcribe_start_time = None
                 self.voice_detected = False
@@ -282,22 +274,77 @@ class AudioTranslator:
 
     @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)    
     def transcribe_audio(self, audio_file_path):
-        """오디오 파일을 텍스트로 변환"""
-        try:
-            flac_file_path = self._convert_to_flac(audio_file_path)
-            transcription = self._call_transcription_api(flac_file_path)
-            print(transcription)
+        """
+        오디오 파일을 텍스트로 변환 (로컬 STT API 사용)
+        """
+        mode = "local"
+        try:     
+            start = datetime.now()
+            if mode!="local":
+                
+                flac_file_path = self._convert_to_flac(audio_file_path)
+                transcription = self._call_transcription_api(flac_file_path)
+            else:
+                start = datetime.now()
+                transcription = self._call_local_transcription_api(audio_file_path)
+            end = datetime.now()
+            print(end - start)
             # 발화 길이 확인 (최소 길이: 5자)
             if transcription and len(transcription.strip()) < 3:
                 self.logger.info(f"발화가 너무 짧아 번역을 건너뜁니다: '{transcription}'")
                 return None
-            
+
             return transcription
         except Exception as e:
-            self.logger.error(f"Error during transcription: {e}", exc_info=True)
-            raise
+            self.logger.error(f"STT 호출 중 오류 발생: {e}", exc_info=True)
+            return None
         finally:
-            self._cleanup_temp_files(audio_file_path, flac_file_path)
+            if mode!="local":
+                self._cleanup_temp_files(audio_file_path, flac_file_path)
+            else:
+                self._cleanup_temp_files(audio_file_path)
+        
+    def _call_local_transcription_api(self, file_path, ports=(8080, 8081, 8082, 8083)):
+        import socket
+
+        def is_port_open(host, port, timeout=1.0):
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except socket.timeout:
+                self.logger.error(f"포트 {port} 연결 시도 중 타임아웃 발생")
+            except ConnectionRefusedError:
+                self.logger.error(f"포트 {port} 연결이 거부되었습니다")
+            except Exception as e:
+                self.logger.error(f"포트 {port} 연결 중 알 수 없는 오류 발생: {e}")
+            return False
+            
+
+        STT_SERVER_IP = "172.17.17.82"
+        # 172.26.81.43
+        # 172.25.1.95
+        available_ports = [port for port in ports if is_port_open(STT_SERVER_IP, port)]
+
+        if not available_ports:
+            self.logger.error("⚠️ 연결 가능한 STT 포트가 없습니다.")
+            return None
+
+        port = random.choice(available_ports)
+        url = f"http://{STT_SERVER_IP}:{port}/api/transcribe"
+
+        try:
+            with open(file_path, 'rb') as f:
+                files = {'audio_file': ('audio.wav', f, 'audio/wav')}
+                response = requests.post(url, files=files, timeout=5)
+                if response.status_code == 200:
+                    return response.json().get('text', '')
+                else:
+                    self.logger.error(f"STT API 오류 {response.status_code}: {response.text}")
+                    return None
+        except Exception as e:
+            self.logger.error(f"로컬 STT 전송 실패: {e}", exc_info=True)
+            return None
+
 
     def _convert_to_flac(self, audio_file_path):
         """WAV 파일을 FLAC 포맷으로 변환"""
@@ -319,6 +366,7 @@ class AudioTranslator:
             response = requests.post(TRANSCRIPTION_URL, headers=headers, files=files)
 
         if response.status_code == 200:
+            print(response.json())
             return response.json().get('text', '')
         else:
             self.logger.error(f"Transcription API error: {response.status_code}, {response.text}", exc_info=True)
@@ -332,7 +380,7 @@ class AudioTranslator:
                     os.unlink(file_path)
                 except Exception as e:
                     self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
-                    
+            
     def convert_to_flac(self, audio_data):
         """오디오 데이터를 메모리 내에서 FLAC 포맷으로 변환"""
         try:
@@ -530,7 +578,7 @@ class AudioTranslator:
             "messages": [
                 {"role": "system", 
                  "content": "You are a translator. Only provide the translation without any explanation."},
-                {"role": "user", "content": f"Translate to {target_lang}:\n{chunk}"},
+                {"role": "user", "content": f"Translate to {target_lang} only:\n{chunk}"},
                 ]
             }
 
@@ -553,7 +601,6 @@ class AudioTranslator:
         )
 
         gui_message = self._prepare_gui_message(translation, transcription)
-   
         # GUI 신호 발송
         if hasattr(self, 'gui_signals'):
             self.gui_signals.translation_update.emit(
@@ -584,17 +631,26 @@ class AudioTranslator:
         if not translation:
             return prev_translation, accumulated_text
 
-        if len(accumulated_text) < MAX_SENTENCE_LENGTH:
-            if prev_translation and translation.startswith(prev_translation):
-                new_text = translation[len(prev_translation):].strip()
-                if new_text:
-                    accumulated_text += " " + new_text
-            else:
-                accumulated_text = translation
-
-        self.translation_results[speech_id]["prev_translation"] = translation
-        self.translation_results[speech_id]["accumulated_text"] = accumulated_text
-        self.last_translation = accumulated_text
+        # 번역 결과에 언어별 기본값 설정
+        for lang in ["English", "Chinese", "Japanese", "Korean"]:
+            translation.setdefault(lang, "")
+        
+        # 키가 있는 언어를 기준으로 업데이트
+        for lang, translated_text in translation.items():
+            prev_trans = prev_translation.get(lang, "") if isinstance(prev_translation, dict) else prev_translation
+            if len(accumulated_text) < MAX_SENTENCE_LENGTH:
+                if prev_trans and translated_text.startswith(prev_trans):
+                    # print(f"translation: {translation}")
+                    new_text = translated_text[len(prev_trans):].strip()
+                    if new_text:
+                        accumulated_text[lang] += " " + new_text
+                else:
+                    accumulated_text = translation
+            # print(f"accumulated_text: {accumulated_text}")
+            self.translation_results[speech_id]["prev_translation"] = translation
+            self.translation_results[speech_id]["accumulated_text"] = accumulated_text
+            self.last_translation = accumulated_text
+            
         return prev_translation, accumulated_text
                
     def _prepare_gui_message(self, translation, transcription):
@@ -676,6 +732,9 @@ class AudioTranslator:
         translations = await self._perform_translation(transcription)
         if translations:
             self.process_translation_result(translations, transcription, "", "", speech_id)
+            self.logger.info(f"✅ 원문: {transcription}")
+            for k, v in translations.items():
+                self.logger.info(f"✅ {k} 번역: {v}")
             
     async def _perform_translation(self, transcription):
         """텍스트 번역 수행"""
@@ -704,10 +763,98 @@ class AudioTranslator:
             duration = (end_time - self.transcribe_start_time).total_seconds()
             self.logger.info(f"✅ 발화 종료! 발화 시간: {duration:.2f}초")
 
-    # ---------- 기타 ----------
-    def start_threads(self):
-        """GUI 모드에서 사용할 스레드만 시작 (사용자 입력 없음)"""
-        # 오디오 캡처 및 번역 처리를 위한 스레드 시작
+    # ---------- 기타 ----------      
+
+    def process_realtime(self):
+        """실시간 번역 스레드"""
+        self.logger.info("실시간 번역 스레드 시작")
+        last_update_time = time.time()
+
+        prev_translation = ""
+        accumulated_text = ""
+
+        while self.is_running:
+            if self.translation_mode != "realtime":
+                time.sleep(1)
+                continue
+
+            if time.time() - last_update_time < self.update_interval:
+                time.sleep(0.05)
+                continue
+            last_update_time = time.time()
+
+            if not self.voice_detected:
+                # 발화 종료 직후, 마지막 번역이 끝난 뒤 신호 보내기
+                if self._pending_end_of_speech:
+                    if hasattr(self, 'gui_signals'):
+                        self.gui_signals.status_update.emit("[blue][실시간] 발화가 완전히 종료되었습니다!")
+                    self._pending_end_of_speech = False
+                continue
+
+            frames_copy = self._get_realtime_audio_frames()
+            if not frames_copy:
+                continue
+
+            try:
+                transcription = self._transcribe_realtime_audio(frames_copy)
+                if not transcription:
+                    continue
+                self.logger.info("✅ 실시간 번역 시작")
+                translation_start = datetime.now()
+                
+                translations = asyncio.run(self.translate_text_async(transcription))
+                if not translations:
+                    continue
+                
+                translation_end = datetime.now()
+                self.logger.info(f"✅ 실시간 번역 종료! 번역 시간: {(translation_end - translation_start).total_seconds():.2f}초")
+                
+                # 원문 및 번역 결과 로깅
+                self.logger.info(f"✅ 원문: {transcription}")
+                for k, v in translations.items():
+                    self.logger.info(f"✅ {k} 번역: {v}")
+                    
+                prev_translation, accumulated_text = self._update_translation_state(
+                    translations, prev_translation, accumulated_text, speech_id="realtime"
+                )
+
+                self._emit_gui_realtime_update(translations, transcription)
+                if self.silence_count > self.silence_chunks:
+                    self._pending_end_of_speech = True
+            except Exception as e:
+                self.logger.error(f"❌ 실시간 번역 중 오류 발생: {e}", exc_info=True)
+
+    def _get_realtime_audio_frames(self):
+        """현재 오디오 프레임 버퍼에서 실시간 번역용 프레임 확보"""
+        with self.buffer_lock:
+            frames_copy = list(self.audio_frames)
+        min_frames = int((RATE * 1.5) / CHUNK)
+        if len(frames_copy) < min_frames:
+            return None
+        return frames_copy
+    
+    def _transcribe_realtime_audio(self, frames_copy):
+        """실시간 STT 수행"""
+        audio_file_path = self.save_audio_to_wav(frames_copy, channels=1)
+        return self.transcribe_audio(audio_file_path)
+
+    def _emit_gui_realtime_update(self, translations, transcription):
+        """GUI에 실시간 번역 결과 전송"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        gui_message = self._prepare_gui_message(translations, transcription)
+
+        if hasattr(self, 'gui_signals'):
+            self.gui_signals.translation_update.emit(
+                timestamp,
+                json.dumps(gui_message, ensure_ascii=False),
+                transcription
+            )
+
+    def start_threads(self, mode="normal"):
+        """오디오 캡처 및 번역 처리를 위한 스레드 시작"""
+        self.translation_mode = mode  # 모드 설정
+
+        # 오디오 캡처 스레드
         capture_thread = threading.Thread(
             target=self.audio_capture,
             args=(self.selected_device,),
@@ -716,13 +863,23 @@ class AudioTranslator:
         )
         capture_thread.start()
 
-        # 비동기 번역 큐 처리
-        asyncio_thread = threading.Thread(
-            target=lambda: asyncio.run(self.process_translation_queue()),
-            daemon=True,
-            name="translation_queue_thread"
-        )
-        asyncio_thread.start()
+        if mode == "realtime":
+            # 실시간 번역 스레드
+            realtime_thread = threading.Thread(
+                target=self.process_realtime,
+                daemon=True,
+                name="realtime_translation_thread"
+            )
+            realtime_thread.start()
+            self.logger.info("실시간 번역 모드 스레드 시작...")
+        else:
+            # 비동기 번역 큐 처리 스레드
+            asyncio_thread = threading.Thread(
+                target=lambda: asyncio.run(self.process_translation_queue()),
+                daemon=True,
+                name="translation_queue_thread"
+            )
+            asyncio_thread.start()
+            self.logger.info("일반 번역 모드 스레드 시작...")
 
-        self.logger.info("오디오 캡처 및 번역 처리 스레드 시작...")
-        self.logger.info("발화 완료 후에만 번역 결과가 표시됩니다.")
+        self.logger.info("오디오 캡처 스레드 시작...")
