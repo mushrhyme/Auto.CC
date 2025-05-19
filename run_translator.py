@@ -6,10 +6,10 @@ def main():
     translator = AudioTranslator()
     
     # 스레드 시작
-    translator.start_threads()
+    translator.start_threads(mode="realtime")
     
     # GUI 시작
-    start_gui(translator)
+    mode = start_gui(translator)
 
 if __name__ == "__main__":
     main() 
