@@ -277,10 +277,15 @@ class AudioTranslator:
         """
         오디오 파일을 텍스트로 변환 (로컬 STT API 사용)
         """
-        mode = "local"
-        try: 
+        mode = "api"
+        try:     
             start = datetime.now()
-            result = self._call_local_transcription_api(audio_file_path, (8080, 8081, 8082, 8083))
+            if mode!="local":
+                flac_file_path = self._convert_to_flac(audio_file_path)
+                transcription = self._call_transcription_api(flac_file_path)
+            elif mode=="api":
+                start = datetime.now()
+                result = self._call_local_transcription_api(audio_file_path)
             end = datetime.now()
             print(end - start)
             # 발화 길이 확인 (최소 길이: 5자)
@@ -294,9 +299,12 @@ class AudioTranslator:
             self.logger.error(f"STT 호출 중 오류 발생: {e}", exc_info=True)
             return None
         finally:
-            self._cleanup_temp_files(audio_file_path)
+            if mode!="local":
+                self._cleanup_temp_files(audio_file_path, flac_file_path)
+            else:
+                self._cleanup_temp_files(audio_file_path)
         
-    def _call_local_transcription_api(self, file_path, ports):
+    def _call_local_transcription_api(self, file_path, ports=(8080, 8081, 8082, 8083)):
         import socket
 
         def is_port_open(host, port, timeout=1.0):
@@ -316,7 +324,7 @@ class AudioTranslator:
         # 172.26.81.43
         # 172.25.1.95
         available_ports = [port for port in ports if is_port_open(STT_SERVER_IP, port)]
-        print(f"available_ports: {available_ports}")
+
         if not available_ports:
             self.logger.error("⚠️ 연결 가능한 STT 포트가 없습니다.")
             return None
@@ -338,6 +346,33 @@ class AudioTranslator:
             self.logger.error(f"로컬 STT 전송 실패: {e}", exc_info=True)
             return None
 
+
+    def _convert_to_flac(self, audio_file_path):
+        """WAV 파일을 FLAC 포맷으로 변환"""
+        flac_file_path = audio_file_path.replace(".wav", ".flac")
+        with sf.SoundFile(audio_file_path) as wav_file:
+            data = wav_file.read(dtype='int16')
+            sf.write(flac_file_path, data, wav_file.samplerate, format='FLAC')
+        return flac_file_path
+
+    def _call_transcription_api(self, flac_file_path):
+        """API 호출로 텍스트 변환"""
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        with open(flac_file_path, 'rb') as audio_file:
+            files = {
+                'file': (os.path.basename(flac_file_path), audio_file, 'audio/flac'),
+                'model': (None, 'whisper-1'),
+                'response_format': (None, 'json')
+            }
+            response = requests.post(TRANSCRIPTION_URL, headers=headers, files=files)
+
+        if response.status_code == 200:
+            print(response.json())
+            return response.json().get('text', '')
+        else:
+            self.logger.error(f"Transcription API error: {response.status_code}, {response.text}", exc_info=True)
+            return None
+
     def _cleanup_temp_files(self, *file_paths):
         """임시 파일 삭제"""
         for file_path in file_paths:
@@ -347,6 +382,30 @@ class AudioTranslator:
                 except Exception as e:
                     self.logger.error(f"Failed to delete temporary file: {e}", exc_info=True)
             
+    def convert_to_flac(self, audio_data):
+        """오디오 데이터를 메모리 내에서 FLAC 포맷으로 변환"""
+        try:
+            # audio_data가 바이트 형식이 아닌 경우 바이트로 변환
+            if isinstance(audio_data, str):
+                audio_data = audio_data.encode('utf-8')
+
+            # 음성 데이터를 numpy 배열로 변환
+            audio_np = np.frombuffer(audio_data, dtype=np.int16)
+
+            # FLAC 포맷으로 변환하기 위한 파일-like 객체 생성
+            flac_buffer = io.BytesIO()
+           
+            # soundfile을 사용해 numpy 데이터를 FLAC 형식으로 변환하여 메모리로 저장
+            with sf.SoundFile(flac_buffer, 'w', samplerate=RATE, channels=CHANNELS, format='FLAC') as file:
+                file.write(audio_np)
+
+            # 메모리에서 FLAC 데이터 반환
+            flac_buffer.seek(0)
+            return flac_buffer.read()  # 실제 FLAC 데이터 반환
+        except Exception as e:
+            self.logger.error(f"Error during FLAC conversion: {e}", exc_info=True)
+        return None
+
     def audio_capture(self, device_index=None):
         """오디오 캡처 및 큐에 데이터 추가"""
         self.check_audio_input(device_index)
@@ -477,6 +536,61 @@ class AudioTranslator:
                     return None
     
     # ---------- 번역 처리 ----------
+    def update_target_languages(self, selected_languages):
+        """선택된 언어에 따라 번역 대상 언어를 업데이트"""
+        self.target_languages = selected_languages
+        
+    async def translate_text_async(self, text, size=200):
+        """텍스트를 청크로 나누어 비동기 번역"""
+        if not text or not text.strip():
+            return None
+
+        chunks = [text[i:i + size] for i in range(0, len(text), size)]
+        all_translations = await asyncio.gather(*(self.translate_chunk(chunk) for chunk in chunks))
+        return self._merge_translations(all_translations)
+
+    def _merge_translations(self, all_translations):
+        """번역 결과 병합"""
+        final = {}
+        for translation_set in all_translations:
+            if translation_set:
+                for lang, trans in translation_set.items():
+                    final.setdefault(lang, []).append(trans)
+        return {k: ' '.join(filter(None, v)) for k, v in final.items()}
+
+    async def translate_chunk(self, chunk):
+        try:
+            lang = detect(chunk)
+            targets = TARGET_LANGUAGES.get(lang[:2], [])
+            results = await asyncio.gather(*(self.call_translation_api(chunk, t) for t in targets))
+            return dict(zip(targets, results))
+        except Exception as e:
+            self.logger.error(f"Language detection error: {str(e)}")
+            return None
+
+    async def call_translation_api(self, chunk, target_lang):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        prompt = f'Translate to {target_lang}: "{chunk}"'
+        data = {
+            "model": GPT_MODEL, 
+            "messages": [
+                {"role": "system", 
+                 "content": "You are a translator. Only provide the translation without any explanation."},
+                {"role": "user", "content": f"Translate to {target_lang} only:\n{chunk}"},
+                ]
+            }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(TRANSLATION_URL, headers=headers, json=data) as resp:
+                if resp.status == 200:
+                    json_data = await resp.json()
+                    return json_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                self.logger.error(f"API error {resp.status}: {await resp.text()}")
+                return None
+            
     def process_translation_result(self, translation, transcription, prev_translation, accumulated_text, speech_id):
         """번역 결과 처리 및 GUI 업데이트"""
        
@@ -552,7 +666,7 @@ class AudioTranslator:
             "korean": "",
             "english": "",
             "chinese": "",
-            # "japanese": ""
+            "japanese": ""
         }
 
         if detected_language == "ko":
@@ -561,15 +675,15 @@ class AudioTranslator:
             gui_message["english"] = transcription
         elif "zh" in detected_language:
             gui_message["chinese"] = transcription
-        # elif detected_language == "ja":
-        #     gui_message["japanese"] = transcription
+        elif detected_language == "ja":
+            gui_message["japanese"] = transcription
         else:
             self.logger.warning(f"Unsupported language detected: {detected_language}")
 
         gui_message["korean"] = gui_message["korean"] or translation.get("Korean", "")
         gui_message["english"] = gui_message["english"] or translation.get("English", "")
         gui_message["chinese"] = gui_message["chinese"] or translation.get("Chinese", "")
-        # gui_message["japanese"] = gui_message["japanese"] or translation.get("Japanese", "")
+        gui_message["japanese"] = gui_message["japanese"] or translation.get("Japanese", "")
         return gui_message
 
     async def process_translation_queue(self):
@@ -609,7 +723,7 @@ class AudioTranslator:
         # 번역 진행 표시 바 시작
         if hasattr(self, 'gui_signals') and hasattr(self.gui_signals, 'translation_started'):
             self.gui_signals.translation_started.emit()
-
+        
         # 음성 추출
         transcription_dict = self.transcribe_audio(audio_file_path)
         print(f"transcription_dict: {transcription_dict}")
@@ -636,11 +750,21 @@ class AudioTranslator:
             if full_name:
                 translations[full_name] = text.strip()
                 
+        # translations = await self._perform_translation(transcription)
         if translations:
             self.process_translation_result(translations, transcription, "", "", speech_id)
             self.logger.info(f"✅ 원문: {transcription}")
             for k, v in translations.items():
                 self.logger.info(f"✅ {k} 번역: {v}")
+            
+    async def _perform_translation(self, transcription):
+        """텍스트 번역 수행"""
+        translation_start = datetime.now()
+        translations = await self.translate_text_async(transcription)
+        translation_end = datetime.now()
+
+        self.logger.info(f"✅ 번역 종료! 번역 시간: {(translation_end - translation_start).total_seconds():.2f}초")
+        return translations
     
     # ---------- GUI 업데이트 ----------
     def set_gui_signals(self, signals):
@@ -693,39 +817,18 @@ class AudioTranslator:
                 continue
 
             try:
-                transcription_dict = self._transcribe_realtime_audio(frames_copy)
-                transcription_dict = {
-                    "original_text": "Now, when I started in the industry, I started a company called Westwood Studio.",
-                    "trans_text" : {
-                        "Korean": "이제, 제가 업계에 진입했을 때, 저는 웨스트우드 스튜디오라는 회사를 시작했습니다.",
-                        "Chinese":"现在，当我进入这个行业时，我创办了一家公司，名为西木工作室。",
-                        # "Japanese":"今、私が業界に入ったとき、ウェストウッドスタジオという会社を始めました。"
-                    }  
-                }
-                # print(f"transcription_dict: {transcription_dict}")
-                transcription = transcription_dict.get("original_text", "")
-                if transcription is None:
-                    return
-
-                # 번역 처리
-                lang_map = {
-                'ko': 'Korean',
-                'zh': 'Chinese',
-                # 'ja': 'Japanese'
-                }
-
-                translations = {
-                    'Korean': '',
-                    'Chinese': '',
-                    # 'Japanese': ''
-                }
-
-                trans_text = transcription_dict.get('trans_text', {})
-                for short_code, text in trans_text.items():
-                    full_name = lang_map.get(short_code)
-                    if full_name:
-                        translations[full_name] = text.strip()
+                transcription = self._transcribe_realtime_audio(frames_copy)
+                if not transcription:
+                    continue
+                self.logger.info("✅ 실시간 번역 시작")
+                translation_start = datetime.now()
                 
+                translations = asyncio.run(self.translate_text_async(transcription))
+                if not translations:
+                    continue
+                
+                translation_end = datetime.now()
+                self.logger.info(f"✅ 실시간 번역 종료! 번역 시간: {(translation_end - translation_start).total_seconds():.2f}초")
                 
                 # 원문 및 번역 결과 로깅
                 self.logger.info(f"✅ 원문: {transcription}")
