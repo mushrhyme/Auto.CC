@@ -49,7 +49,7 @@ class AudioTranslator:
         self.setup_logging()
         self.load_config()
         self.audio_folder = Path("audio")
-        self.translation_mode = "normal" 
+        self.translation_mode = "api" 
         self.audio_queue = queue.Queue()
         self.is_running = True
         self.voice_detected = False
@@ -197,40 +197,40 @@ class AudioTranslator:
                 self.transcribe_start_time = self.voice_start_time
                 self.logger.info(f"✅ 발화 감지! Level: {audio_level:.1f}")    
                 
-                # # 감지된 언어를 업데이트
-                # if hasattr(self, 'gui_signals'):
-                #     try:
-                #         # 최근 오디오 프레임을 텍스트로 변환
-                #         with self.buffer_lock:
-                #             frames_copy = list(self.audio_frames[-10:])  # 최근 10개의 프레임 복사
-                #         if frames_copy:
-                #             audio_file_path = self.save_audio_to_wav(frames_copy)
-                #             transcription, _ = self.transcribe_audio(audio_file_path, 8080)
-                #             if transcription is None:
-                #                 self.logger.info("발화 내용이 없어 번역 요청을 하지 않습니다.")
-                #                 return False  # 번역 중단
-                            
-                #             if transcription:
-                #                 print(f"발화 감지된 텍스트: {transcription}")
-                #                 detected_language = detect(transcription)  # 텍스트로 언어 감지
-                #                 self.detected_language = 'zh' if 'zh' in detected_language else detected_language
-                #                 language_map = {
-                #                     "ko": "한국어",
-                #                     "en": "영어",
-                #                     "zh": "중국어",
-                #                     "ja": "일본어"
-                #                 }
-                #                 language_name = language_map.get(detected_language, "알 수 없음")
-                #                 self.gui_signals.status_update.emit(f"{language_name}를 감지 중입니다...")
-                #             else:
-                #                 self.gui_signals.status_update.emit("언어 감지 실패")
-                #         else:
-                #             self.gui_signals.status_update.emit("오디오 데이터 부족으로 언어 감지 실패")
-                #     except Exception as e:
-                #         self.logger.error(f"언어 감지 중 오류 발생: {e}", exc_info=True)
-                #         self.gui_signals.status_update.emit("언어 감지 실패")
+                if self.translation_mode=="local":
+                    # 감지된 언어를 업데이트
+                    if hasattr(self, 'gui_signals'):
+                        try:
+                            # 최근 오디오 프레임을 텍스트로 변환
+                            with self.buffer_lock:
+                                frames_copy = list(self.audio_frames[-10:])  # 최근 10개의 프레임 복사
+                            if frames_copy:
+                                audio_file_path = self.save_audio_to_wav(frames_copy)
+                                transcription, _ = self.transcribe_audio(audio_file_path, 8080)
+                                if transcription is None:
+                                    self.logger.info("발화 내용이 없어 번역 요청을 하지 않습니다.")
+                                    return False  # 번역 중단
+                                
+                                if transcription:
+                                    print(f"발화 감지된 텍스트: {transcription}")
+                                    detected_language = detect(transcription)  # 텍스트로 언어 감지
+                                    self.detected_language = 'zh' if 'zh' in detected_language else detected_language
+                                    language_map = {
+                                        "ko": "한국어",
+                                        "en": "영어",
+                                        "zh": "중국어",
+                                        "ja": "일본어"
+                                    }
+                                    language_name = language_map.get(detected_language, "알 수 없음")
+                                    self.gui_signals.status_update.emit(f"{language_name}를 감지 중입니다...")
+                                else:
+                                    self.gui_signals.status_update.emit("언어 감지 실패")
+                            else:
+                                self.gui_signals.status_update.emit("오디오 데이터 부족으로 언어 감지 실패")
+                        except Exception as e:
+                            self.logger.error(f"언어 감지 중 오류 발생: {e}", exc_info=True)
+                            self.gui_signals.status_update.emit("언어 감지 실패")
 
-               
             self.voice_detected = True
             return True
         else:
@@ -245,32 +245,6 @@ class AudioTranslator:
                 self.voice_detected = False
            
             return False
-
-    # def save_audio_to_wav(self, frames, temp=True, channels=None):
-    #     """오디오 프레임을 WAV 파일로 저장"""
-    #     if not frames:
-    #         return None
-       
-    #     # 지정되지 않은 경우 기본 채널 사용
-    #     if channels is None:
-    #         channels = CHANNELS
-       
-    #     if temp:
-    #         # 임시 파일에 저장
-    #         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-    #         temp_filename = temp_file.name
-    #         temp_file.close()
-    #     else:
-    #         # 고정 파일명에 저장
-    #         temp_filename = "realtime_audio.wav"
-       
-    #     with wave.open(temp_filename, 'wb') as wf:
-    #         wf.setnchannels(channels)
-    #         wf.setsampwidth(2)  # 2 bytes for paInt16
-    #         wf.setframerate(RATE)
-    #         wf.writeframes(b''.join(frames))
-       
-    #     return temp_filename
     
     def save_audio_to_wav(self, frames, temp=True, channels=None):
         """오디오 프레임을 WAV 파일로 저장"""
@@ -303,16 +277,15 @@ class AudioTranslator:
         """
         오디오 파일을 텍스트로 변환 (로컬 STT API 사용)
         """
-        mode = "api"
         flac_file_path = None
         try:     
-            if mode=="local":
+            if self.translation_mode=="local":
                 flac_file_path = self._convert_to_flac(audio_file_path)
                 result = self._call_transcription_api(flac_file_path)
                 transcription = result.get("text", "").strip()
                 return (transcription or None), None
             
-            elif mode=="api":
+            elif self.translation_mode=="api":
                 result = self._call_local_transcription_api(audio_file_path, ports)
                 print(f"call_local_api -> result: {result}")
                 transcription = result.get("original_text", "").strip()
@@ -346,25 +319,6 @@ class AudioTranslator:
         
     def _call_local_transcription_api(self, file_path, ports):
         import socket
-        # return  {
-
-        #     'original_text': '여보세요? 네, 안녕하십니까. ', 
-
-        #     'status': 'success', 
-
-        #     'ori_language': 'ko', 
-
-        #     'processing_time': '13.69', 
-
-        #     'trans_text': {
-
-        #         'zh': '?好？是的，?好。', 
-
-        #         'en': "Hello? Yes, good day. ", 
-        #     }
-        # }
-        
-
         def is_port_open(host, port, timeout=1.0):
             try:
                 with socket.create_connection((host, port), timeout=timeout):
@@ -713,13 +667,6 @@ class AudioTranslator:
                 transcription
             )
 
-            # # 비동기 방식이 아닌 QTimer를 사용하여 GUI 업데이트를 안전하게 처리
-            # def emit_signal():
-            #     self.gui_signals.translation_update.emit(timestamp, gui_message, translation)
-
-            # # QTimer를 사용해 이벤트 루프에 안전하게 GUI 신호 발송
-            # QTimer.singleShot(0, emit_signal)
-
     def _update_translation_state(self, translation, prev_translation, accumulated_text, speech_id):
         """번역 상태 업데이트"""
         if not hasattr(self, 'translation_results'):
@@ -881,10 +828,8 @@ class AudioTranslator:
                 transcription
             )
 
-    def start_threads(self, mode="normal"):
+    def start_threads(self):
         """오디오 캡처 및 번역 처리를 위한 스레드 시작"""
-        self.translation_mode = mode  # 모드 설정
-
         # 오디오 캡처 스레드
         capture_thread = threading.Thread(
             target=self.audio_capture,

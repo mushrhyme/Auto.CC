@@ -9,7 +9,7 @@ def main():
     translator.start_threads()
     
     # GUI 시작
-    mode = start_gui(translator)
+    start_gui(translator)
 
 if __name__ == "__main__":
     main() 

@@ -716,17 +716,35 @@ class AudioTranslatorGUI(QMainWindow):
 
     def update_subtitle_height(self):
         """자막 높이 업데이트 함수"""
-        self.subtitle_window.update_subtitle_height(self.subtitle_height_slider.value())
-
+        self.subtitle_window.resize(self.subtitle_window.width(), self.subtitle_height_slider.value())
+     
     def update_subtitle_width(self):
         """자막 너비 업데이트 함수"""
-        width = self.subtitle_width_slider.value()
-        self.subtitle_window.resize(width, self.subtitle_window.height())
-
+        self.subtitle_window.resize(self.subtitle_width_slider.value(), self.subtitle_window.height())
+        
     def update_subtitle_opacity(self, value):
-        """자막 창 투명도 업데이트 함수"""
-        self.subtitle_window.setWindowOpacity(value / 100.0)
-    
+        """자막 배경 투명도(0~100) 조절"""
+        alpha = int(255 * (value / 100))
+        float_style = f"color: white; font-weight: bold; background-color: rgba(0,0,0,{alpha});"
+        # 상단 번역 라벨들
+        for label in (
+            self.subtitle_window.korean_label,
+            self.subtitle_window.english_label,
+            self.subtitle_window.chinese_label,
+            # self.subtitle_window.japanese_label
+        ):
+            label.setStyleSheet(float_style)
+
+        # 하단 원문 라벨에도 동일한 투명도 적용
+        orig_style = (
+            f"color: #ffd700; "
+            f"background-color: rgba(0,0,0,{alpha}); "
+            f"font-size: 16px; padding: 6px; border-radius: 6px;"
+        )
+        self.subtitle_window.stt_original_label.setStyleSheet(orig_style)
+
+        # 윈도우 전체 불투명도는 1.0으로 고정
+        self.subtitle_window.setWindowOpacity(1.0)
     def update_selected_languages(self):
         """선택된 언어를 업데이트하고 자막 창과 번역 대상 언어를 동기화"""
         self.selected_languages = [
