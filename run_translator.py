@@ -13,3 +13,8 @@ def main():
 
 if __name__ == "__main__":
     main() 
+    
+    
+
+# devices = translator.list_audio_devices()
+# print(devices)
