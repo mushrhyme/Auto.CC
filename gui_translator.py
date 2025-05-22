@@ -128,7 +128,6 @@ class FloatingSubtitleWindow(QMainWindow):
         self.translation_timer.timeout.connect(self._update_translation_progress)
         self._progress_value = 0
 
-        self.resize(800, 400)
         self.move_to_bottom()
 
     # ---------- 자막 및 레이아웃 ----------
@@ -183,6 +182,19 @@ class FloatingSubtitleWindow(QMainWindow):
             text = translations.get(lang, '')
             label.setStyleSheet(style)
             label.setText(text)
+        
+            # 1) 현재 너비 저장
+            current_width = self.width()
+
+            # 2) 레이아웃 재계산 강제
+            self.grid_layout.invalidate()           # (Qt 6 부터 activate() 대신 invalidate())
+            self.grid_layout.activate()             # 레이아웃 재배치
+
+            # 3) 전체 위젯을 최소 크기로 맞춘 뒤
+            self.adjustSize()
+
+            # 4) 너비는 고정하고, 높이만 새로 계산된 값으로 리사이즈
+            self.resize(current_width, self.height()+50)
 
     def update_font_size(self, size):
         """자막 폰트 크기 변경 함수"""
@@ -317,7 +329,7 @@ class FloatingSubtitleWindow(QMainWindow):
 class AudioTranslatorGUI(QMainWindow):
     """
     메인 GUI 클래스
-    자막 창, 음성 레벨, 번역 상태 등의 업데이트를 담당
+    자막 창, 음성 레벨, 번역 상태 등의 업데이트를 담당 
     """
     def __init__(self, translator):
         super().__init__()
@@ -335,6 +347,8 @@ class AudioTranslatorGUI(QMainWindow):
 
         self.subtitle_window = FloatingSubtitleWindow(self)
         self.subtitle_window.show()
+        
+        self.update_selected_languages()
         self.update_subtitle_opacity(85)
         self.apply_styles()
 
@@ -390,6 +404,8 @@ class AudioTranslatorGUI(QMainWindow):
             checkbox.stateChanged.connect(self.update_selected_languages)
             self.language_checkboxes[lang_key] = checkbox
             self.language_selection_layout.addWidget(checkbox)
+            
+        self.selected_languages = list(self.language_checkboxes.keys())
         layout.addLayout(self.language_selection_layout)
 
         # 작업 초기화 버튼
@@ -428,16 +444,16 @@ class AudioTranslatorGUI(QMainWindow):
         # 자막 창 높이 조절
         subtitle_size_layout.addWidget(QLabel("자막 높이:"))
         self.subtitle_height_slider = QSlider(Qt.Horizontal)
-        self.subtitle_height_slider.setRange(100, 800)
-        self.subtitle_height_slider.setValue(200)
+        self.subtitle_height_slider.setRange(50, 800)
+        self.subtitle_height_slider.setValue(100)
         self.subtitle_height_slider.valueChanged.connect(self.update_subtitle_height)
         subtitle_size_layout.addWidget(self.subtitle_height_slider)
 
         # 자막 창 너비 조절
         subtitle_size_layout.addWidget(QLabel("자막 너비:"))
         self.subtitle_width_slider = QSlider(Qt.Horizontal)
-        self.subtitle_width_slider.setRange(400, 2000)
-        self.subtitle_width_slider.setValue(800)
+        self.subtitle_width_slider.setRange(500, 2500)
+        self.subtitle_width_slider.setValue(1000)
         self.subtitle_width_slider.valueChanged.connect(self.update_subtitle_width)
         subtitle_size_layout.addWidget(self.subtitle_width_slider)
 
