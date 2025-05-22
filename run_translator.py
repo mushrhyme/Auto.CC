@@ -6,7 +6,7 @@ def main():
     translator = AudioTranslator()
     
     # 스레드 시작
-    translator.start_threads(mode="realtime")
+    translator.start_threads()
     
     # GUI 시작
     mode = start_gui(translator)
