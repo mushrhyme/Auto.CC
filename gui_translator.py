@@ -20,6 +20,7 @@ class TranslatorSignals(QObject):
     status_update = Signal(str)
     voice_detected = Signal(bool)
     translation_started = Signal()
+    stt_original_update = Signal(str)
     
 # ---------- FLOATING SUBTITLE WINDOW ----------
 class FloatingSubtitleWindow(QMainWindow):
@@ -84,12 +85,12 @@ class FloatingSubtitleWindow(QMainWindow):
         self.korean_label = self.create_label("한국어")
         self.english_label = self.create_label("영어")
         self.chinese_label = self.create_label("중국어")
-        self.japanese_label = self.create_label("일본어")
+        # self.japanese_label = self.create_label("일본어")
 
         self.grid_layout.addWidget(self.korean_label, 0, 0)
         self.grid_layout.addWidget(self.english_label, 0, 1)
         self.grid_layout.addWidget(self.chinese_label, 1, 0)
-        self.grid_layout.addWidget(self.japanese_label, 1, 1)
+        # self.grid_layout.addWidget(self.japanese_label, 1, 1)
 
         self.grid_layout.setRowStretch(0, 1)
         self.grid_layout.setRowStretch(1, 1)
@@ -110,6 +111,18 @@ class FloatingSubtitleWindow(QMainWindow):
         """)
         outer_layout.addWidget(self.translation_bar)
 
+        # 하단 원문 박스 창
+        self.stt_original_label = QLabel("")
+        self.stt_original_label.setStyleSheet("color: #ffd700; background-color: rgba(0,0,0,180); font-size: 16px; padding: 6px; border-radius: 6px;")
+        self.stt_original_label.setAlignment(Qt.AlignCenter)
+        
+        # ① 긴 문장은 자동 줄바꿈
+        self.stt_original_label.setWordWrap(True)
+        # ② 창 너비에 맞춰 라벨 폭 고정
+        self.stt_original_label.setFixedWidth(self.width() - 20)
+        
+        outer_layout.addWidget(self.stt_original_label)
+        
         # 타이머 설정
         self.translation_timer = QTimer()
         self.translation_timer.timeout.connect(self._update_translation_progress)
@@ -150,8 +163,6 @@ class FloatingSubtitleWindow(QMainWindow):
             self.translation_history.pop(0)  # 가장 오래된 번역 결과 제거
         self.translation_history.append(translations)
         self.current_history_index = len(self.translation_history) - 1  # 최신 번역 결과로 인덱스 이동
-        # for key, value in translations.items:
-        #     print(f"[{key}] {value}")
 
     def move_to_bottom(self):
         """자막 창을 화면 하단에 위치시키는 함수"""
@@ -162,31 +173,24 @@ class FloatingSubtitleWindow(QMainWindow):
 
     def update_subtitles(self, translations):
         """자막을 업데이트하는 함수"""
-        # 파란색으로 표시할 메시지 정의
-        if hasattr(self.main_window, "subtitle_blue_mode") and self.main_window.subtitle_blue_mode:
-            style = "color: #1e90ff; font-weight: bold; background-color: rgba(0, 0, 0, 150);"
-        else:
-            style = "color: white; font-weight: bold; background-color: rgba(0, 0, 0, 150);"
+        style = "color: white; font-weight: bold; background-color: rgba(0, 0, 0, 150);"
         for lang, label in [
             ('korean', self.korean_label),
             ('english', self.english_label),
             ('chinese', self.chinese_label),
-            ('japanese', self.japanese_label)
+            # ('japanese', self.japanese_label)
         ]:
             text = translations.get(lang, '')
             label.setStyleSheet(style)
             label.setText(text)
-        
-        # self.korean_label.setText(translations.get('korean', ''))
-        # self.english_label.setText(translations.get('english', ''))
-        # self.chinese_label.setText(translations.get('chinese', ''))
-        # self.japanese_label.setText(translations.get('japanese', ''))
 
     def update_font_size(self, size):
         """자막 폰트 크기 변경 함수"""
         font = QFont()
         font.setPointSize(size)
-        for label in [self.korean_label, self.english_label, self.chinese_label, self.japanese_label]:
+        for label in [self.korean_label, self.english_label, self.chinese_label, 
+                    #   self.japanese_label
+                      ]:
             label.setFont(font)
 
     def update_subtitle_height(self, height):
@@ -206,7 +210,7 @@ class FloatingSubtitleWindow(QMainWindow):
         language_labels = {
             "korean": self.korean_label,
             "english": self.english_label,
-            "japanese": self.japanese_label,
+            # "japanese": self.japanese_label,
             "chinese": self.chinese_label
         }
 
@@ -248,6 +252,11 @@ class FloatingSubtitleWindow(QMainWindow):
             self.grid_layout.setRowStretch(1, 1)  # 2행 활성화
             self.grid_layout.setColumnStretch(0, 1)
             self.grid_layout.setColumnStretch(1, 1)  # 2열 활성화
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 창 크기가 변경될 때마다 stt_original_label 폭을 갱신
+        self.stt_original_label.setFixedWidth(self.width() - 20)
         
     # ---------- 번역 진행 표시 바 ----------
     def start_translation_progress(self, estimated_duration):
@@ -368,7 +377,7 @@ class AudioTranslatorGUI(QMainWindow):
         language_options = {
             "korean": "한국어",
             "english": "영어",
-            "japanese": "일본어",
+            # "japanese": "일본어",
             "chinese": "중국어"
         }
 
@@ -617,6 +626,7 @@ class AudioTranslatorGUI(QMainWindow):
         self.signals.status_update.connect(self.on_status_update)
         self.signals.voice_detected.connect(self.on_voice_detected)
         self.signals.translation_started.connect(self.on_translation_started)
+        self.signals.stt_original_update.connect(self.on_stt_original_update)
 
     def setup_menu(self):
         """메뉴 설정 함수"""
@@ -711,9 +721,13 @@ class AudioTranslatorGUI(QMainWindow):
         self.subtitle_window.update_visible_languages(self.selected_languages)
 
         # 번역 대상 언어 업데이트
-        self.translator.update_target_languages(self.selected_languages)
+        # self.translator.update_target_languages(self.selected_languages)
         
     # 상태 업데이트 관련 메서드
+    @Slot(str)
+    def on_stt_original_update(self, original_text):
+        self.subtitle_window.stt_original_label.setText(original_text)
+    
     @Slot()
     def on_translation_started(self):
         """번역 시작 시 진행 표시 바 시작"""
@@ -783,26 +797,14 @@ class AudioTranslatorGUI(QMainWindow):
         color = "#5cb85c" if "감지 중" in status else "black"
         self.status_label.setStyleSheet(f"font-weight: bold; color: {color};")
         
-        # 파란 자막 모드 ON
-        if "[blue][실시간] 발화가 완전히 종료되었습니다!" in status:
-            self.subtitle_blue_mode = True
-            blue_style = "color: #1e90ff; font-weight: bold; background-color: rgba(0, 0, 0, 150);"
-            for label in [
-                self.subtitle_window.korean_label,
-                self.subtitle_window.english_label,
-                self.subtitle_window.chinese_label,
-                self.subtitle_window.japanese_label
-            ]:
-                label.setStyleSheet(blue_style)
-        # 다른 신호가 오면 파란 자막 모드 OFF
-        elif "감지 중" in status or "실패" in status or "초기화" in status:
+        if "감지 중" in status or "실패" in status or "초기화" in status:
             self.subtitle_blue_mode = False
             default_style = "color: white; font-weight: bold; background-color: rgba(0, 0, 0, 150);"
             for label in [
                 self.subtitle_window.korean_label,
                 self.subtitle_window.english_label,
                 self.subtitle_window.chinese_label,
-                self.subtitle_window.japanese_label
+                # self.subtitle_window.japanese_label
             ]:
                 label.setStyleSheet(default_style)
 
