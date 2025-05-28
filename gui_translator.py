@@ -46,6 +46,10 @@ class FloatingSubtitleWindow(QMainWindow):
         outer_layout.setSpacing(5)
 
         
+        outer_layout.setSizeConstraint(QVBoxLayout.SetNoConstraint)
+        self.setMinimumWidth(0)
+
+        
         # 화살표 버튼 레이아웃
         arrow_layout = QHBoxLayout()
         self.left_arrow_button = QPushButton("◀")
@@ -195,7 +199,7 @@ class FloatingSubtitleWindow(QMainWindow):
 
             # 4) 너비는 고정하고, 높이만 새로 계산된 값으로 리사이즈
             self.resize(current_width, self.height()+50)
-
+    
     def update_font_size(self, size):
         """자막 폰트 크기 변경 함수"""
         font = QFont()
@@ -444,7 +448,7 @@ class AudioTranslatorGUI(QMainWindow):
         # 자막 창 높이 조절
         subtitle_size_layout.addWidget(QLabel("자막 높이:"))
         self.subtitle_height_slider = QSlider(Qt.Horizontal)
-        self.subtitle_height_slider.setRange(50, 800)
+        self.subtitle_height_slider.setRange(50, 300)
         self.subtitle_height_slider.setValue(100)
         self.subtitle_height_slider.valueChanged.connect(self.update_subtitle_height)
         subtitle_size_layout.addWidget(self.subtitle_height_slider)
@@ -452,7 +456,7 @@ class AudioTranslatorGUI(QMainWindow):
         # 자막 창 너비 조절
         subtitle_size_layout.addWidget(QLabel("자막 너비:"))
         self.subtitle_width_slider = QSlider(Qt.Horizontal)
-        self.subtitle_width_slider.setRange(500, 2500)
+        self.subtitle_width_slider.setRange(200, 2500)
         self.subtitle_width_slider.setValue(1000)
         self.subtitle_width_slider.valueChanged.connect(self.update_subtitle_width)
         subtitle_size_layout.addWidget(self.subtitle_width_slider)
@@ -718,10 +722,20 @@ class AudioTranslatorGUI(QMainWindow):
         """자막 높이 업데이트 함수"""
         self.subtitle_window.resize(self.subtitle_window.width(), self.subtitle_height_slider.value())
      
-    def update_subtitle_width(self):
+    def update_subtitle_width(self, width):
         """자막 너비 업데이트 함수"""
         self.subtitle_window.resize(self.subtitle_width_slider.value(), self.subtitle_window.height())
-        
+    
+    def update_subtitle_width(self, width):
+        """자막 창 너비 업데이트 함수"""
+        # 1) 최소 폭을 0으로 내려줘서 완전히 줄어들 수 있게
+        self.subtitle_window.setMinimumWidth(0)
+        # 2) 최대 폭을 슬라이더 값으로 설정
+        self.subtitle_window.setMaximumWidth(width)
+        # 3) 실제 크기 리사이즈
+        self.subtitle_window.resize(width, self.subtitle_window.height())
+
+
     def update_subtitle_opacity(self, value):
         """자막 배경 투명도(0~100) 조절"""
         alpha = int(255 * (value / 100))
