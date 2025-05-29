@@ -1,7 +1,0 @@
-{
-  "silence_threshold": 100,
-  "silence_duration": 1.0,
-  "preferred_device": 0,
-  "update_interval": 1.0,
-  "translation_mode": "complete"
-}
