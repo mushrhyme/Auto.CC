@@ -663,3 +663,4 @@ class AudioTranslator:
             ).start()
         
         # self.start_realtime_transcription_loop()
+        
