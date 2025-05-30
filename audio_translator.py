@@ -12,7 +12,7 @@ import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
+from dotenv import load_dotenv
 import pyaudio
 import requests
 import numpy as np
@@ -38,13 +38,13 @@ RATE = 8000  # 초당 수집하는 오디오 프레임 수: 높을수록 품질�
 CHUNK = 1024 # 한 번에 처리하는 오디오 프레임 수:  작을수록 빠르게 처리되나 품질이 떨어질 수 있음
 SILENCE_THRESHOLD = 600 # 평균 진폭이 이 값 미만이면 침묵으로 판단
 SILENCE_DURATION = 2 # 침묵 지속 시간: 이 시간 동안 침묵이면 발화가 종료된 것으로 간주
-# REALTIME_UPDATE_INTERVAL = 1.0 # 실시간 번역 업데이트 간격: 음성이 진행 중일 때 현재까지 수집된 버퍼를 주기적으로 처리하여 중간 번역 결과를 보여주는 시간 간격
+REALTIME_UPDATE_INTERVAL = 1.0 # 실시간 자막 업데이트 간격: 음성이 진행 중일 때 현재까지 수집된 버퍼를 주기적으로 처리하여 원문을 보여주는 시간 간격
 MAX_SENTENCE_LENGTH = 50 # 최대 문장 길이 (자유롭게 조정 가능)
 TARGET_LANGUAGES = {
-    'ko': ['Chinese', 'Japanese', 'English'],
-    'ja': ['Korean', 'Chinese', 'English'],
-    'en': ['Korean', 'Chinese', 'Japanese'],
-    'zh': ['Korean', 'Japanese', 'English']
+    'ko': ['zh','ja','en'],
+    'ja': ['ko','zh','en'],
+    'en': ['ko','zh','ja'],
+    'zh': ['ko','ja','en']
 }
 # GPT_MODEL = "gpt-3.5-turbo"  
 GPT_MODEL = "gpt-4o-mini-2024-07-18"
@@ -54,12 +54,16 @@ TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 TRANSLATION_URL = "https://api.openai.com/v1/chat/completions"
 # 172.17.17.82:8080
 
+load_dotenv()
+
+
 class AudioTranslator:
     def __init__(self):
         self.setup_logging()
         self.load_config()
         self.audio_folder = Path("audio")
-        self.translation_mode = "aws" 
+        self.audio_folder.mkdir(exist_ok=True)
+        self.translation_mode = "server" 
         self.audio_queue = queue.Queue()
         self.is_running = True
         self.voice_detected = False
@@ -71,9 +75,12 @@ class AudioTranslator:
         self.buffer_lock = threading.Lock()
         self.aws_creds = None    # 캐시할 자격증명 dict
         self.aws_creds_expires = None
+        self._partial_timer = None
+        self._last_partial = ""             # 마지막으로 보낸 partial 저장
+        self.min_partial_length = 4  
         
         # API 키 초기화
-        self.api_key = os.environ.get("OPENAI_API_KEY")
+        self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
             self.logger.error("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
             raise ValueError("OPENAI_API_KEY 환경 변수를 설정해주세요.")
@@ -99,13 +106,6 @@ class AudioTranslator:
         """AWS 세션 토큰을 캐싱해서 관리"""
         now = datetime.now(timezone.utc)
         if self.aws_creds is None or now + timedelta(minutes=5) >= self.aws_creds_expires:
-            # 새로 받아오기
-            # output = subprocess.run(
-            #     ["aws", "sts", "get-session-token", "--duration-seconds", "3600", "--output", "json"],
-            #     capture_output=True, text=True
-            # )
-            # info = json.loads(output.stdout)["Credentials"]
-            # 외부 aws-cli 프로세스를 띄우는 대신, 내부 함수 호출로 변경
             sts = boto3.client("sts", region_name="ap-northeast-2")
             resp = sts.get_session_token(DurationSeconds=3600)
             info = resp["Credentials"]
@@ -115,8 +115,7 @@ class AudioTranslator:
                 "aws_secret_access_key": info["SecretAccessKey"],
                 "aws_session_token": info["SessionToken"],
             }
-            # ISO8601 문자열 → datetime
-            self.aws_creds_expires = info["Expiration"]  # 이미 ISO8601 형식 문자열
+            self.aws_creds_expires = info["Expiration"] 
        
         session = boto3.session.Session(
             **self.aws_creds,
@@ -185,19 +184,7 @@ class AudioTranslator:
         self.silence_chunks = int(self.silence_duration / self.chunk_duration)
         self.min_volume_for_display = 200
 
-    # ---------- 오디오 장치 관리 ----------
-    def check_audio_input(self, device_index):
-        """오디오 입력 상태 확인"""
-        p = pyaudio.PyAudio()
-        try:
-            device_info = p.get_device_info_by_index(device_index if device_index is not None else
-                                                p.get_default_input_device_info()['index'])
-        except Exception as e:
-            self.logger.error(f"오디오 입력 확인 중 오류 발생: {e}", exc_info=True)
-        finally:
-            p.terminate()
-    
-    # ---------- 오디어 데이터 처리 ----------
+    # ---------- 오디어 데이터 처리 ----------s
     @staticmethod
     def get_audio_level(audio_data):
         """오디오 데이터의 볼륨 레벨 계산"""
@@ -220,123 +207,271 @@ class AudioTranslator:
             return np.mean(top_samples)
         return np.mean(normalized)
 
+    def should_transcribe(self, audio_level):
+        """오디오 레벨에 따라 음성이 감지되었는지 확인"""
+        if audio_level > self.silence_threshold:        
+            # 음성 감지 상태 업데이트
+            if not self.voice_detected:
+                self.voice_start_time = datetime.now()  # 음성 시작 시간 기록
+                self.transcribe_start_time = self.voice_start_time
+                self.logger.info(f"✅ 발화 감지! Level: {audio_level:.1f}")    
+                self._start_partial_updates()
+            self.voice_detected = True
+            self.silence_count = 0
+            return True
+        else:
+            self.silence_count += 1
+            # 침묵 후 음성 감지 상태 재설정
+            if self.silence_count > self.silence_chunks and self.voice_detected:
+                # 발화 종료 로그 제거 (중복 방지)
+                self.logger.info("✅ [실시간] 발화가 완전히 종료되었습니다!")
+                self.voice_start_time = None
+                self.transcribe_start_time = None
+                self.voice_detected = False
+                self._stop_partial_updates()
+            return False
+        
+    def _start_partial_updates(self):
+        """부분 자막 송출용 타이머 시작"""
+        def _send_partial():
+            try:
+                with self.buffer_lock:
+                    frames = list(self.audio_frames)
+                if not frames:
+                    return
+        
+                tmp = self.save_audio_to_wav(frames, temp=True)
+                result = self.transcribe_audio(tmp, ports=8080)
+                text = (result or {}).get("original_text", "").strip()
+
+                # 1) 새 텍스트인가? 2) 충분히 길이가 있는가?
+                if text and text != self._last_partial and len(text) >= self.min_partial_length:
+                    self._last_partial = text
+                    self._emit_stt_original(text)
+            except Exception as e:
+                self.logger.error("❌ _send_partial 중 예외 발생: %s", e, exc_info=True)
+            finally:
+                # 타이머를 재스케줄
+                self._partial_timer = threading.Timer(self.update_interval, _send_partial)
+                self._partial_timer.daemon = True
+                self._partial_timer.start()
+
+        _send_partial()
+
+    def _start_partial_updates(self):
+        def _partial_loop():
+            while self.is_running:                # ① 항상 돌아감
+                if self.voice_detected:           # ② 음성 감지 중일 때만 처리
+                    try:
+                        with self.buffer_lock:
+                            frames = list(self.audio_frames)
+                        if frames:
+                            tmp = self.save_audio_to_wav(frames, temp=True)
+                            result = self.transcribe_audio(tmp, ports=8080)
+                            text = (result or {}).get("original_text", "").strip()
+                            if text and text != self._last_partial and len(text) >= self.min_partial_length:
+                                self._last_partial = text
+                                self._emit_stt_original(text)
+                    except Exception as e:
+                        self.logger.error("❌ 부분 자막 예외: %s", e, exc_info=True)
+                time.sleep(self.update_interval)  # ③ 음성 감지 유무 상관없이 주기 대기
+
+        # 중복 스레드 생성 방지
+        if getattr(self, "_partial_thread", None) and self._partial_thread.is_alive():
+            return
+
+        self._partial_thread = threading.Thread(
+            target=_partial_loop, daemon=True, name="partial_update_thread"
+        )
+        self._partial_thread.start()
+
+
+
+    def _stop_partial_updates(self):
+        """부분 자막 타이머 취소"""
+        if self._partial_timer:
+            self._partial_timer.cancel()
+            self._partial_timer = None
+        self._last_partial = "" 
+
+    def save_audio_to_wav(self, frames, temp=True, channels=None):
+        """오디오 프레임을 WAV 파일로 저장"""
+        if not frames:
+            return None
+
+        if channels is None:
+            channels = CHANNELS
+
+        if temp:
+            # 기존 임시 파일 로직
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            filename = temp_file.name
+            temp_file.close()
+        else:
+            # 오디오 폴더에 타임스탬프 파일명으로 저장
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            filename = str(self.audio_folder / f"audio_{ts}.wav")
+
+        with wave.open(filename, 'wb') as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(2)
+            wf.setframerate(RATE)
+            wf.writeframes(b''.join(frames))
+
+        return filename
+    
+    @backoff.on_exception(backoff.expo, (requests.exceptions.RequestException, Exception), max_tries=1)    
+    def transcribe_audio(self, audio_file_path, ports):
+        """
+        오디오 파일을 텍스트로 변환 (로컬 STT API 사용)
+        """
+        try:     
+            result = self._call_transcription_api(audio_file_path, ports)
+            # print(f"call_local_api -> result: {result}")
+            return result
+        except Exception as e:
+            self.logger.error(f"STT 호출 중 오류 발생: {e}", exc_info=True)
+            return None
+    
+    def _call_transcription_api(self, file_path, ports=None):
+        """API 호출로 텍스트 변환"""
+        # OpenAI API를 서버에서 호출하는 경우
+        if self.translation_mode == "server":
+            def is_port_open(host, port, timeout=1.0):
+                try:
+                    with socket.create_connection((host, port), timeout=timeout):
+                        return True
+                except socket.timeout:
+                    self.logger.error(f"포트 {port} 연결 시도 중 타임아웃 발생")
+                except ConnectionRefusedError:
+                    self.logger.error(f"포트 {port} 연결이 거부되었습니다")
+                except Exception as e:
+                    self.logger.error(f"포트 {port} 연결 중 알 수 없는 오류 발생: {e}")
+                return False
+                
+
+            STT_SERVER_IP = "172.17.17.82"
+            # 172.26.81.43
+            # 172.25.1.95
+            available_ports = [ports]
+            # [port for port in ports if is_port_open(STT_SERVER_IP, port)]
+
+            if not available_ports:
+                self.logger.error("⚠️ 연결 가능한 STT 포트가 없습니다.")
+                return None
+
+            port = random.choice(available_ports)
+            url = f"http://{STT_SERVER_IP}:{port}/api/transcribe"
+
+            try:
+                with open(file_path, 'rb') as f:
+                    files = {'audio_file': ('audio.wav', f, 'audio/wav')}
+                    response = requests.post(url, files=files, timeout=20)
+                    if response.status_code == 200:
+                        result = response.json()
+                        return result
+                    else:
+                        self.logger.error(f"STT API 오류 {response.status_code}: {response.text}")
+                        return None
+            except Exception as e:
+                self.logger.error(f"로컬 STT 전송 실패: {e}", exc_info=True)
+                return None
+        # OpenAI API를 로컬에서 사용하는 경우
+        else:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            with open(file_path, 'rb') as audio_file:
+                files = {
+                    'file': (os.path.basename(file_path), audio_file, 'audio/flac'),
+                    'model': (None, 'whisper-1'),
+                    'response_format': (None, 'json')
+                }
+                response = requests.post(TRANSCRIPTION_URL, headers=headers, files=files, timeout=20)
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                self.logger.error(f"Transcription API error: {response.status_code}, {response.text}", exc_info=True)
+                return None
+    
+    def log_audio_level(self, data):
+        """오디오 레벨을 로깅하고 GUI에 업데이트"""
+        audio_level = self.get_audio_level(data)
+        if hasattr(self, 'gui_signals'):
+            self.gui_signals.audio_level_update.emit(audio_level)
+            
     def audio_capture(self, device_index=None):
         """오디오 캡처 및 큐에 데이터 추가"""
-        if self.translation_mode=="aws":
-            p = pyaudio.PyAudio()
-            stream = self._open_audio_stream(p, device_index, CHANNELS)
-            try:
+        p = pyaudio.PyAudio()
+        stream = self._open_audio_stream(p, device_index, CHANNELS)
+
+        try:
+            if self.translation_mode=="aws":
                 while self.is_running:
                     chunk = stream.read(CHUNK, exception_on_overflow=False)
                     # AWS 스트리밍 루프가 꺼내가도록 큐에 넣는다
                     self.audio_queue.put(chunk)
-            finally:
+            else:
+                self.logger.info(f"현재 침묵 임계값: {self.silence_threshold} (이 값 이상이면 오디오가 감지됨)")
+
+                # 오디오 캡처 루프
+                silence_counter = 0
+                speech_detected_during_session = False
+                volume_monitor_counter = 0
+                while self.is_running:
+                    try:
+                        chunk = stream.read(CHUNK, exception_on_overflow=False)
+                        self.log_audio_level(chunk)
+
+                        # 현재 청크의 평균 진폭 계산
+                        audio_level = self.get_audio_level(chunk)
+
+                        # 볼륨 레벨 모니터링 (5초마다)
+                        volume_monitor_counter += 1
+                        if volume_monitor_counter >= 80:  # 80 * 0.0625 = 5초
+                            volume_monitor_counter = 0
+
+                        # 버퍼에 데이터 추가
+                        with self.buffer_lock:
+                            self.audio_frames.append(chunk)
+
+                        # 음성 감지 확인
+                        voice_detect = self.should_transcribe(audio_level)
+                        if voice_detect:
+                            silence_counter = 0
+                            speech_detected_during_session = True
+                        else:
+                            silence_counter += 1
+
+                        # 침묵이 지속되면 세션 처리 종료
+                        if silence_counter >= self.silence_chunks and len(self.audio_frames) > 0:
+                            for _ in range(3):  # 약 0.3 ~ 0.4초 분량 더 수집
+                                try:
+                                    extra_data = stream.read(CHUNK, exception_on_overflow=False)
+                                    with self.buffer_lock:
+                                        self.audio_frames.append(extra_data)
+                                except Exception as e:
+                                    self.logger.error(f"추가 오디오 수집 중 오류: {e}", exc_info=True)
+                                    
+                            with self.buffer_lock:
+                                frames_copy = list(self.audio_frames)
+                                self.audio_frames.clear()
+
+                            # 충분한 데이터가 있고 음성이 감지된 경우에만 처리
+                            min_frames = int((RATE * 1.5) / CHUNK)
+                            if len(frames_copy) > min_frames and speech_detected_during_session:
+                                self.audio_queue.put((frames_copy, CHANNELS))
+
+                            silence_counter = 0
+                            speech_detected_during_session = False
+
+                    except Exception as e:
+                        self.logger.error(f"오디오 캡처 중 에러가 발생하였습니다: {e}", exc_info=True)
+
+        finally:
+            if stream:
                 stream.stop_stream()
                 stream.close()
-                p.terminate()
-        else:
-            self.check_audio_input(device_index)
-
-            p = pyaudio.PyAudio()
-            stream = None
-            selected_channels = CHANNELS
-
-            def log_audio_level(data):
-                """오디오 레벨을 로깅하고 GUI에 업데이트"""
-                audio_level = self.get_audio_level(data)
-                if hasattr(self, 'gui_signals'):
-                    self.gui_signals.audio_level_update.emit(audio_level)
-
-            try:
-                # 장치 정보 가져오기
-                if device_index is not None:
-                    try:
-                        device_info = p.get_device_info_by_index(device_index)
-                        max_input_channels = int(device_info.get('maxInputChannels', 1))
-                        selected_channels = min(selected_channels, max_input_channels)
-                        self.logger.info(f"장치 정보: {device_info.get('name')} (채널: {selected_channels})")
-                    except Exception as e:
-                        self.logger.error(f"장치 정보를 가져오는데 실패했습니다: {e}", exc_info=True)
-                        device_index = None
-
-                # 오디오 스트림 열기
-                stream = self._open_audio_stream(p, device_index, selected_channels)
-
-                if not stream:
-                    self.logger.error("오디오 스트림을 열지 못했습니다. 캡처를 종료합니다.")
-                    return
-                if self.translation_mode == "aws":
-                    try:
-                        while self.is_running and self.translation_mode == "aws":
-                            data = stream.read(CHUNK, exception_on_overflow=False)
-                            with self.buffer_lock:
-                                self.audio_frames.append(data)
-                    finally:
-                        stream.stop_stream()
-                        stream.close()
-                        p.terminate()
-                else:
-                    self.logger.info(f"현재 침묵 임계값: {self.silence_threshold} (이 값 이상이면 오디오가 감지됨)")
-
-                    # 오디오 캡처 루프
-                    silence_counter = 0
-                    speech_detected_during_session = False
-                    volume_monitor_counter = 0
-                    while self.is_running:
-                        try:
-                            data = stream.read(CHUNK, exception_on_overflow=False)
-                            log_audio_level(data)
-
-                            # 현재 청크의 평균 진폭 계산
-                            audio_level = self.get_audio_level(data)
-
-                            # 볼륨 레벨 모니터링 (5초마다)
-                            volume_monitor_counter += 1
-                            if volume_monitor_counter >= 80:  # 80 * 0.0625 = 5초
-                                volume_monitor_counter = 0
-
-                            # 버퍼에 데이터 추가
-                            with self.buffer_lock:
-                                self.audio_frames.append(data)
-
-                            # 음성 감지 확인
-                            voice_detect = self.should_transcribe(audio_level)
-                            if voice_detect:
-                                silence_counter = 0
-                                speech_detected_during_session = True
-                            else:
-                                silence_counter += 1
-
-                            # 침묵이 지속되면 세션 처리 종료
-                            if silence_counter >= self.silence_chunks and len(self.audio_frames) > 0:
-                                for _ in range(3):  # 약 0.3 ~ 0.4초 분량 더 수집
-                                    try:
-                                        extra_data = stream.read(CHUNK, exception_on_overflow=False)
-                                        with self.buffer_lock:
-                                            self.audio_frames.append(extra_data)
-                                    except Exception as e:
-                                        self.logger.error(f"추가 오디오 수집 중 오류: {e}", exc_info=True)
-                                        
-                                with self.buffer_lock:
-                                    frames_copy = list(self.audio_frames)
-                                    self.audio_frames.clear()
-
-                                # 충분한 데이터가 있고 음성이 감지된 경우에만 처리
-                                min_frames = int((RATE * 1.5) / CHUNK)
-                                if len(frames_copy) > min_frames and speech_detected_during_session:
-                                    self.audio_queue.put((frames_copy, selected_channels))
-
-                                silence_counter = 0
-                                speech_detected_during_session = False
-
-                        except Exception as e:
-                            self.logger.error(f"오디오 캡처 중 에러가 발생하였습니다: {e}", exc_info=True)
-
-            finally:
-                if stream:
-                    stream.stop_stream()
-                    stream.close()
-                p.terminate()
+            p.terminate()
      
     def _open_audio_stream(self, p, device_index, channels):
         """오디오 스트림을 열고 실패 시 기본 장치 또는 모노 채널로 시도"""
@@ -381,26 +516,6 @@ class AudioTranslator:
 
     
     # ---------- 번역 처리 ----------
-  
-    def process_translation_result(self, translation, transcription, prev_translation, accumulated_text, speech_id):
-        """번역 결과 처리 및 GUI 업데이트"""
-    
-        # 새로운 번역 시작 시 초기화
-        timestamp = datetime.now().strftime('%H:%M:%S')
-    
-        prev_translation, accumulated_text = self._update_translation_state(
-            translation, prev_translation, accumulated_text, speech_id
-        )
-
-        gui_message = self._prepare_gui_message(translation, transcription)
-        # GUI 신호 발송
-        if hasattr(self, 'gui_signals'):
-            self.gui_signals.translation_update.emit(
-                timestamp,
-                json.dumps(gui_message),  # 딕셔너리를 JSON 문자열로 변환
-                transcription
-            )
-
     def _update_translation_state(self, translation, prev_translation, accumulated_text, speech_id):
         """번역 상태 업데이트"""
         if not hasattr(self, 'translation_results'):
@@ -437,7 +552,196 @@ class AudioTranslator:
             self.last_translation = accumulated_text
             
         return prev_translation, accumulated_text
+    
+    def process_translation_result(self, translation, transcription, prev_translation, accumulated_text, speech_id):
+        """번역 결과 처리 및 GUI 업데이트"""
+    
+        # 새로운 번역 시작 시 초기화
+        timestamp = datetime.now().strftime('%H:%M:%S')
+    
+        prev_translation, accumulated_text = self._update_translation_state(
+            translation, prev_translation, accumulated_text, speech_id
+        )
+
+        gui_message = self._prepare_gui_message(translation, transcription)
+        # GUI 신호 발송
+        if hasattr(self, 'gui_signals'):
+            self.gui_signals.translation_update.emit(
+                timestamp,
+                json.dumps(gui_message),  # 딕셔너리를 JSON 문자열로 변환
+                transcription
+            )
             
+    async def process_translation_queue(self):
+        """번역 큐 처리"""
+        current_speech_id = 0
+
+        while self.is_running:
+            frames_copy, selected_channels = await self._get_audio_from_queue()
+            if frames_copy is None:
+                continue
+
+            current_speech_id += 1
+            try:
+                await self.handle_audio_frames(frames_copy, selected_channels, current_speech_id)
+                self.audio_queue.task_done()
+            except Exception as e:
+                self.logger.error(f"Error in translation processing: {e}", exc_info=True)
+
+    async def _get_audio_from_queue(self):
+        """오디오 큐에서 데이터 가져오기"""
+        try:
+            return self.audio_queue.get(timeout=0.01)
+        except queue.Empty:
+            await asyncio.sleep(0.01)
+        return None, None
+    
+    async def handle_audio_frames(self, frames, channels, speech_id):
+        """오디오 프레임 처리"""
+        audio_file_path = self.save_audio_to_wav(frames, temp=False, channels=channels)
+
+        self.log_timing_on_end_of_speech() # 발화 종료 시간 로깅
+        
+        # 번역 시작 신호 전송
+        self.emit_gui_signal_if_available("translation_started")
+        self.logger.info("✅ 번역 시작")
+
+        # 번역 진행 표시 바 시작
+        if hasattr(self, 'gui_signals') and hasattr(self.gui_signals, 'translation_started'):
+            self.gui_signals.translation_started.emit()
+        
+        # --- OpenAI(server/local) 모드 (기존 로직) ---
+        # 음성 추출
+        self.logger.info("8080 연결")
+        result = self.transcribe_audio(audio_file_path, 8080)
+        transcription = result.get("original_text", "").strip()
+        self.aws_source_lang_code = result.get("ori_language", "").strip()
+        if transcription is None:
+            return
+        # 발화 길이 확인
+        if transcription and len(transcription.strip()) < 3:
+            self.logger.info(f"발화가 너무 짧아 번역을 건너뜁니다: '{transcription}'")
+            return None
+        self._emit_stt_original(transcription) 
+        # if translations is None:
+        #     # 번역 처리
+        #     lang_map = {'ko': 'Korean', 'zh': 'Chinese', 'en': 'English'}
+        #     translations = {'Korean': '', 'Chinese': '', 'English': ''}
+
+        #     # 언어 감지 및 번역
+        #     translations = await self._perform_translation(transcription)
+        #     if self.detected_language in lang_map:
+        #         translations.setdefault(lang_map[self.detected_language], transcription)
+            
+        # # --- GUI에 원문·번역 내보내기 ---         
+        # self._emit_stt_original(transcription) 
+        # self.process_translation_result(translations, transcription, "", "", speech_id)
+        # self.logger.info(f"✅ 원문: {transcription}")
+        
+        # for k, v in translations.items():
+        #     self.logger.info(f"✅ {k} 번역: {v}")
+            
+        # AWS Translate 호출
+        loop = asyncio.get_running_loop()
+                    
+        # 번역 대상 언어 목록
+        target_codes = TARGET_LANGUAGES.get(self.aws_source_lang_code)
+        
+        # GUI에 표시할 언어명 매핑
+        lang_names = {'ko':'Korean', 'en':'English', 'zh':'Chinese','ja':'Japanese',}
+        
+        tasks = [
+            loop.run_in_executor(
+                None,
+                lambda src=code: self.aws_translate.translate_text(
+                    Text=transcription,
+                    SourceLanguageCode=self.aws_source_lang_code,
+                    TargetLanguageCode=src
+                )
+            )
+            for code in target_codes
+        ]
+        # await 모아서 결과 받기
+        results = await asyncio.gather(*tasks)
+        
+        # 결과 딕셔너리로 정리
+        translated = {
+            lang_names[code]: result.get('TranslatedText','')
+            for code, result in zip(target_codes, results)
+        }
+        
+        translated[lang_names[self.aws_source_lang_code]] = transcription
+        # print(f"translated: {translated}")
+        self.process_translation_result(
+            translated,
+            transcription,
+            prev_translation="",
+            accumulated_text="",
+            speech_id=0
+        )
+        self.logger.info(f"✅ 원문: {transcription}")
+        self.logger.info(f"✅ 번역: {translated}")
+        
+    async def _perform_translation(self, transcription):
+        """텍스트 번역 수행"""
+        translation_start = datetime.now()
+        translations = await self.translate_text_async(transcription)
+        translation_end = datetime.now()
+
+        self.logger.info(f"✅ 번역 종료! 번역 시간: {(translation_end - translation_start).total_seconds():.2f}초")
+        return translations
+
+    async def translate_text_async(self, text, size=200):
+        """텍스트를 청크로 나누어 비동기 번역"""
+        if not text or not text.strip():
+            return None
+
+        chunks = [text[i:i+size] for i in range(0, len(text), size)]
+        all_translations = await asyncio.gather(*(self.translate_chunk(chunk) for chunk in chunks))
+        return self._merge_translations(all_translations)
+
+    def _merge_translations(self, all_translations):
+        """번역 결과 병합"""
+        final = {}
+        for translation_set in all_translations:
+            if translation_set:
+                for lang, trans in translation_set.items():
+                    final.setdefault(lang, []).append(trans)
+        return {k: ' '.join(filter(None, v)) for k, v in final.items()}
+
+    async def translate_chunk(self, chunk):
+        try:
+            self.detected_language = detect(chunk)
+            targets = TARGET_LANGUAGES.get(self.detected_language[:2], [])
+            results = await asyncio.gather(*(self.call_translation_api(chunk, t) for t in targets))
+            return dict(zip(targets, results))
+        except Exception as e:
+            self.logger.error(f"Language detection error: {str(e)}")
+            return None
+
+    async def call_translation_api(self, chunk, target_lang):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        prompt = f'Translate to {target_lang}: "{chunk}"'
+        data = {
+            "model": GPT_MODEL, 
+            "messages": [
+                {"role": "system", 
+                "content": "You are a translator. Only provide the translation without any explanation."},
+                {"role": "user", "content": f"Translate to {target_lang} only:\n{chunk}"},
+                ]
+            }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(TRANSLATION_URL, headers=headers, json=data) as resp:
+                if resp.status == 200:
+                    json_data = await resp.json()
+                    return json_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                self.logger.error(f"API error {resp.status}: {await resp.text()}")
+                return None
+
     def _prepare_gui_message(self, translation, transcription):
         # print(f"translation: {translation}")
         """GUI 메시지 구성"""
@@ -448,58 +752,6 @@ class AudioTranslator:
             "japanese": translation.get("Japanese", "")
         }
         return gui_message
-    
-    async def _aws_streaming_transcribe(self, wav_path):
-        ws = await websockets.connect(self.aws_url, ping_timeout=None)
-        try:
-            full_transcript = ""
-            last_len = 0
-
-            async def send_audio():
-                wf = wave.open(wav_path, 'rb')
-                try:
-                    chunk_size = int(RATE / 10) 
-                    while True:
-                        data = wf.readframes(chunk_size)
-                        if not data:
-                            break
-                        await ws.send(create_audio_event(data))
-                        await asyncio.sleep(0.1)
-                finally:
-                    wf.close()
-
-            async def receive_transcript():
-                nonlocal full_transcript, last_len
-                try:
-                    while True:
-                        raw = await ws.recv()
-                        header, payload = decode_event(raw)
-                        if header.get(':message-type') == 'event':
-                            results = payload['Transcript']['Results']
-                            if results:
-                                alt = results[0]['Alternatives'][0]
-                                text = alt['Transcript']
-                                if not results[0].get('IsPartial', False):
-                                    if len(text) > last_len:
-                                        full_transcript += text[last_len:]
-                                        last_len = len(text)
-                except websockets.exceptions.ConnectionClosedOK:
-                    pass
-                return full_transcript
-
-            send_task = asyncio.create_task(send_audio())
-            recv_task = asyncio.create_task(receive_transcript())
-
-            # 1) 오디오 전송 끝날 때까지 대기
-            await send_task
-            # 2) 받은 결과가 다 모일 때까지 대기
-            transcription = await recv_task
-            print("AWS STT 성공:", transcription)
-            return transcription
-
-        finally:
-            # send/receive가 끝났든 에러났든 반드시 연결 해제
-            await ws.close()
     
     async def _aws_send(self, ws):
         """마이크 버퍼의 청크를 AWS에 전송"""
@@ -557,12 +809,12 @@ class AudioTranslator:
                         last_partial = ""
                         self._emit_stt_original(text)
                         loop = asyncio.get_running_loop()
-                        
-                        
+                    
                         # 번역 대상 언어 목록
-                        target_codes = ['ko','zh','ja']
+                        target_codes = TARGET_LANGUAGES.get(self.aws_source_lang_code)
+                        
                         # GUI에 표시할 언어명 매핑
-                        lang_names = {'ko':'Korean','zh':'Chinese','ja':'Japanese'}
+                        lang_names = {'ko':'Korean', 'en':'English', 'zh':'Chinese','ja':'Japanese',}
                       
                         tasks = [
                             loop.run_in_executor(
@@ -584,8 +836,8 @@ class AudioTranslator:
                             for code, result in zip(target_codes, results)
                         }
                         
-                        translated['English'] = text  # 원문은 영어로 고정
-                        
+                        translated[lang_names[self.aws_source_lang_code]] = text  # 원문은 영어로 고정
+                        # print(f"translated: {translated}")
                         self.process_translation_result(
                             translated,
                             text,
@@ -600,6 +852,14 @@ class AudioTranslator:
            
     
     # ---------- GUI 업데이트 ----------
+    def log_timing_on_end_of_speech(self):
+        if hasattr(self, 'transcribe_start_time') and self.transcribe_start_time:
+            end_time = datetime.now()
+            duration = (end_time - self.transcribe_start_time).total_seconds()
+            self.logger.info(f"✅ 발화 종료! 발화 시간: {duration:.2f}초")
+            
+            
+
     def set_gui_signals(self, signals):
         """GUI 신호 객체 설정"""
         # self.logger.debug("GUI 신호 객체 설정됨")
@@ -661,6 +921,4 @@ class AudioTranslator:
                 daemon=True,
                 name="translation_queue_thread"
             ).start()
-        
-        # self.start_realtime_transcription_loop()
         
