@@ -2,3 +2,4 @@ logs/
 audio/
 __pycache__/
 audio_
+.env

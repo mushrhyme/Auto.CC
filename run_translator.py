@@ -3,7 +3,7 @@ from gui_translator import start_gui
 
 def main():
     # AudioTranslator 인스턴스 생성
-    translator = AudioTranslator()
+    translator = AudioTranslator(translation_mode="server", language_code="zh")
     
     # 스레드 시작
     translator.start_threads()

@@ -1,6 +1,4 @@
 import os
-import re
-import io
 import time
 import json
 import queue
@@ -17,7 +15,6 @@ import pyaudio
 import requests
 import numpy as np
 import soundfile as sf
-import aiohttp
 from langdetect import detect
 from PyQt5.QtCore import QTimer
 import backoff
@@ -25,10 +22,7 @@ import socket
 import boto3
 import websockets
 from presigned_url import AWSTranscribePresignedURL
-import subprocess
-import sys
 from eventstream import create_audio_event, decode_event
-import string
 
 
 # Constants
@@ -56,14 +50,13 @@ TRANSLATION_URL = "https://api.openai.com/v1/chat/completions"
 
 load_dotenv()
 
-
 class AudioTranslator:
-    def __init__(self):
+    def __init__(self, translation_mode="aws", language_code="en"):
         self.setup_logging()
         self.load_config()
         self.audio_folder = Path("audio")
         self.audio_folder.mkdir(exist_ok=True)
-        self.translation_mode = "server" 
+        self.translation_mode = translation_mode
         self.audio_queue = queue.Queue()
         self.is_running = True
         self.voice_detected = False
@@ -85,17 +78,15 @@ class AudioTranslator:
             self.logger.error("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
             raise ValueError("OPENAI_API_KEY 환경 변수를 설정해주세요.")
         
-        # (A) AWS Transcribe 언어 코드
-        self.aws_language_code = "en-US" # en-US  ko-KR
-
-        # (B) AWS Translate API용 소스/타겟 코드
-        #    ex) "en", "ko" 등
-        self.aws_source_lang_code = "en"
-        self.aws_target_lang_code = "ko"
-
-        # (C) GUI에 뿌릴 때 언어명 키
-        #    ex) self.aws_target_lang_code == "ko" 이면 "Korean"
-        self.translate_target_lang_name = "Korean"
+        # AWS Transcribe 언어 코드
+        language_map = {
+            "en": "en-US", 
+            "ko": "ko-KR", 
+            "ja": "ja-JP", 
+            "zh": "zh-CN"
+        }
+        self.aws_language_code = language_map[language_code] # AWS Transcribe API용
+        self.aws_source_lang_code = language_code # AWS Translate API용
         
         self.aws_stream_stop = threading.Event()
         self.use_silence_vad = True
@@ -231,32 +222,32 @@ class AudioTranslator:
                 self._stop_partial_updates()
             return False
         
-    def _start_partial_updates(self):
-        """부분 자막 송출용 타이머 시작"""
-        def _send_partial():
-            try:
-                with self.buffer_lock:
-                    frames = list(self.audio_frames)
-                if not frames:
-                    return
+    # def _start_partial_updates(self):
+    #     """부분 자막 송출용 타이머 시작"""
+    #     def _send_partial():
+    #         try:
+    #             with self.buffer_lock:
+    #                 frames = list(self.audio_frames)
+    #             if not frames:
+    #                 return
         
-                tmp = self.save_audio_to_wav(frames, temp=True)
-                result = self.transcribe_audio(tmp, ports=8080)
-                text = (result or {}).get("original_text", "").strip()
+    #             tmp = self.save_audio_to_wav(frames, temp=True)
+    #             result = self.transcribe_audio(tmp, ports=8080)
+    #             text = (result or {}).get("original_text", "").strip()
 
-                # 1) 새 텍스트인가? 2) 충분히 길이가 있는가?
-                if text and text != self._last_partial and len(text) >= self.min_partial_length:
-                    self._last_partial = text
-                    self._emit_stt_original(text)
-            except Exception as e:
-                self.logger.error("❌ _send_partial 중 예외 발생: %s", e, exc_info=True)
-            finally:
-                # 타이머를 재스케줄
-                self._partial_timer = threading.Timer(self.update_interval, _send_partial)
-                self._partial_timer.daemon = True
-                self._partial_timer.start()
+    #             # 1) 새 텍스트인가? 2) 충분히 길이가 있는가?
+    #             if text and text != self._last_partial and len(text) >= self.min_partial_length:
+    #                 self._last_partial = text
+    #                 self._emit_stt_original(text)
+    #         except Exception as e:
+    #             self.logger.error("❌ _send_partial 중 예외 발생: %s", e, exc_info=True)
+    #         finally:
+    #             # 타이머를 재스케줄
+    #             self._partial_timer = threading.Timer(self.update_interval, _send_partial)
+    #             self._partial_timer.daemon = True
+    #             self._partial_timer.start()
 
-        _send_partial()
+    #     _send_partial()
 
     def _start_partial_updates(self):
         def _partial_loop():
@@ -398,7 +389,7 @@ class AudioTranslator:
         audio_level = self.get_audio_level(data)
         if hasattr(self, 'gui_signals'):
             self.gui_signals.audio_level_update.emit(audio_level)
-            
+      
     def audio_capture(self, device_index=None):
         """오디오 캡처 및 큐에 데이터 추가"""
         p = pyaudio.PyAudio()
@@ -460,7 +451,6 @@ class AudioTranslator:
                             min_frames = int((RATE * 1.5) / CHUNK)
                             if len(frames_copy) > min_frames and speech_detected_during_session:
                                 self.audio_queue.put((frames_copy, CHANNELS))
-
                             silence_counter = 0
                             speech_detected_during_session = False
 
@@ -472,7 +462,7 @@ class AudioTranslator:
                 stream.stop_stream()
                 stream.close()
             p.terminate()
-     
+    
     def _open_audio_stream(self, p, device_index, channels):
         """오디오 스트림을 열고 실패 시 기본 장치 또는 모노 채널로 시도"""
         try:
@@ -589,13 +579,18 @@ class AudioTranslator:
                 self.logger.error(f"Error in translation processing: {e}", exc_info=True)
 
     async def _get_audio_from_queue(self):
-        """오디오 큐에서 데이터 가져오기"""
+        
         try:
-            return self.audio_queue.get(timeout=0.01)
+            item = self.audio_queue.get(timeout=0.01)
+            if isinstance(item, tuple):
+                return item
+            else:
+                # 단일 chunk인 경우 모노 채널로 처리
+                return [item], CHANNELS
         except queue.Empty:
             await asyncio.sleep(0.01)
-        return None, None
-    
+            return None, None
+
     async def handle_audio_frames(self, frames, channels, speech_id):
         """오디오 프레임 처리"""
         audio_file_path = self.save_audio_to_wav(frames, temp=False, channels=channels)
@@ -604,7 +599,7 @@ class AudioTranslator:
         
         # 번역 시작 신호 전송
         self.emit_gui_signal_if_available("translation_started")
-        self.logger.info("✅ 번역 시작")
+        # self.logger.info("✅ 번역 시작")
 
         # 번역 진행 표시 바 시작
         if hasattr(self, 'gui_signals') and hasattr(self.gui_signals, 'translation_started'):
@@ -612,7 +607,7 @@ class AudioTranslator:
         
         # --- OpenAI(server/local) 모드 (기존 로직) ---
         # 음성 추출
-        self.logger.info("8080 연결")
+        # self.logger.info("8080 연결")
         result = self.transcribe_audio(audio_file_path, 8080)
         transcription = result.get("original_text", "").strip()
         self.aws_source_lang_code = result.get("ori_language", "").strip()
@@ -671,7 +666,7 @@ class AudioTranslator:
         }
         
         translated[lang_names[self.aws_source_lang_code]] = transcription
-        # print(f"translated: {translated}")
+        print(f"translated: {translated}")
         self.process_translation_result(
             translated,
             transcription,
@@ -679,68 +674,68 @@ class AudioTranslator:
             accumulated_text="",
             speech_id=0
         )
-        self.logger.info(f"✅ 원문: {transcription}")
-        self.logger.info(f"✅ 번역: {translated}")
+        # self.logger.info(f"✅ 원문: {transcription}")
+        # self.logger.info(f"✅ 번역: {translated}")
         
-    async def _perform_translation(self, transcription):
-        """텍스트 번역 수행"""
-        translation_start = datetime.now()
-        translations = await self.translate_text_async(transcription)
-        translation_end = datetime.now()
+    # async def _perform_translation(self, transcription):
+    #     """텍스트 번역 수행"""
+    #     translation_start = datetime.now()
+    #     translations = await self.translate_text_async(transcription)
+    #     translation_end = datetime.now()
 
-        self.logger.info(f"✅ 번역 종료! 번역 시간: {(translation_end - translation_start).total_seconds():.2f}초")
-        return translations
+    #     self.logger.info(f"✅ 번역 종료! 번역 시간: {(translation_end - translation_start).total_seconds():.2f}초")
+    #     return translations
 
-    async def translate_text_async(self, text, size=200):
-        """텍스트를 청크로 나누어 비동기 번역"""
-        if not text or not text.strip():
-            return None
+    # async def translate_text_async(self, text, size=200):
+    #     """텍스트를 청크로 나누어 비동기 번역"""
+    #     if not text or not text.strip():
+    #         return None
 
-        chunks = [text[i:i+size] for i in range(0, len(text), size)]
-        all_translations = await asyncio.gather(*(self.translate_chunk(chunk) for chunk in chunks))
-        return self._merge_translations(all_translations)
+    #     chunks = [text[i:i+size] for i in range(0, len(text), size)]
+    #     all_translations = await asyncio.gather(*(self.translate_chunk(chunk) for chunk in chunks))
+    #     return self._merge_translations(all_translations)
 
-    def _merge_translations(self, all_translations):
-        """번역 결과 병합"""
-        final = {}
-        for translation_set in all_translations:
-            if translation_set:
-                for lang, trans in translation_set.items():
-                    final.setdefault(lang, []).append(trans)
-        return {k: ' '.join(filter(None, v)) for k, v in final.items()}
+    # def _merge_translations(self, all_translations):
+    #     """번역 결과 병합"""
+    #     final = {}
+    #     for translation_set in all_translations:
+    #         if translation_set:
+    #             for lang, trans in translation_set.items():
+    #                 final.setdefault(lang, []).append(trans)
+    #     return {k: ' '.join(filter(None, v)) for k, v in final.items()}
 
-    async def translate_chunk(self, chunk):
-        try:
-            self.detected_language = detect(chunk)
-            targets = TARGET_LANGUAGES.get(self.detected_language[:2], [])
-            results = await asyncio.gather(*(self.call_translation_api(chunk, t) for t in targets))
-            return dict(zip(targets, results))
-        except Exception as e:
-            self.logger.error(f"Language detection error: {str(e)}")
-            return None
+    # async def translate_chunk(self, chunk):
+    #     try:
+    #         self.detected_language = detect(chunk)
+    #         targets = TARGET_LANGUAGES.get(self.detected_language[:2], [])
+    #         results = await asyncio.gather(*(self.call_translation_api(chunk, t) for t in targets))
+    #         return dict(zip(targets, results))
+    #     except Exception as e:
+    #         self.logger.error(f"Language detection error: {str(e)}")
+    #         return None
 
-    async def call_translation_api(self, chunk, target_lang):
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        prompt = f'Translate to {target_lang}: "{chunk}"'
-        data = {
-            "model": GPT_MODEL, 
-            "messages": [
-                {"role": "system", 
-                "content": "You are a translator. Only provide the translation without any explanation."},
-                {"role": "user", "content": f"Translate to {target_lang} only:\n{chunk}"},
-                ]
-            }
+    # async def call_translation_api(self, chunk, target_lang):
+    #     headers = {
+    #         "Authorization": f"Bearer {self.api_key}",
+    #         "Content-Type": "application/json"
+    #     }
+    #     prompt = f'Translate to {target_lang}: "{chunk}"'
+    #     data = {
+    #         "model": GPT_MODEL, 
+    #         "messages": [
+    #             {"role": "system", 
+    #             "content": "You are a translator. Only provide the translation without any explanation."},
+    #             {"role": "user", "content": f"Translate to {target_lang} only:\n{chunk}"},
+    #             ]
+    #         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(TRANSLATION_URL, headers=headers, json=data) as resp:
-                if resp.status == 200:
-                    json_data = await resp.json()
-                    return json_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                self.logger.error(f"API error {resp.status}: {await resp.text()}")
-                return None
+    #     async with aiohttp.ClientSession() as session:
+    #         async with session.post(TRANSLATION_URL, headers=headers, json=data) as resp:
+    #             if resp.status == 200:
+    #                 json_data = await resp.json()
+    #                 return json_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    #             self.logger.error(f"API error {resp.status}: {await resp.text()}")
+    #             return None
 
     def _prepare_gui_message(self, translation, transcription):
         # print(f"translation: {translation}")
@@ -857,8 +852,6 @@ class AudioTranslator:
             end_time = datetime.now()
             duration = (end_time - self.transcribe_start_time).total_seconds()
             self.logger.info(f"✅ 발화 종료! 발화 시간: {duration:.2f}초")
-            
-            
 
     def set_gui_signals(self, signals):
         """GUI 신호 객체 설정"""
@@ -893,7 +886,58 @@ class AudioTranslator:
             # enable_partial_results_stabilization=True
         )
         self.logger.info(f"Presigned URL ready")
-        
+    
+    def set_translation_mode(self, mode: str):
+        """
+        mode: "server" 또는 "aws"
+        """
+        if mode not in ("server", "aws"):
+            self.logger.warning(f"지원하지 않는 모드: {mode}")
+            return
+        self.translation_mode = mode
+        self.logger.info(f"⚙️ translation_mode를 '{mode}'로 변경했습니다.")
+
+    def set_translation_mode(self, mode: str):
+        """
+        mode: "server" 또는 "aws"
+        """
+        if mode not in ("server", "aws"):
+            self.logger.warning(f"지원하지 않는 모드: {mode}")
+            return
+
+        # 1) 기존 AWS 스트리밍 중지
+        self.aws_stream_stop.set()
+
+        # 2) 서버 모드 쓰레드 종료 플래그가 있다면 세트 (옵션)
+        #    예: self.server_stop_event.set()
+
+        # 3) 큐 비우기
+        try:
+            while True:
+                self.audio_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        # 4) 모드 변경
+        self.translation_mode = mode
+        self.logger.info(f"⚙️ translation_mode를 '{mode}'로 변경했습니다.")
+
+        # 5) 새 모드에 맞게 쓰레드 기동
+        if mode == "aws":
+            self.aws_stream_stop.clear()
+            self._generate_presigned_url()
+            threading.Thread(
+                target=lambda: asyncio.run(self._aws_streaming_loop_all()),
+                daemon=True,
+                name="aws_stream"
+            ).start()
+        else:  # "server"
+            # 만약 서버 모드에도 중단 이벤트를 사용했다면 .clear() 해주세요.
+            threading.Thread(
+                target=lambda: asyncio.run(self.process_translation_queue()),
+                daemon=True,
+                name="translation_queue_thread"
+            ).start()
     # ---------- 기타 ---------- 
     def start_threads(self):
         """오디오 캡처 및 번역 처리를 위한 스레드 시작"""
@@ -906,7 +950,6 @@ class AudioTranslator:
         )
         capture_thread.start()
 
-        # 비동기 번역 큐 처리 스레드
         if self.translation_mode == "aws":
             threading.Thread(
                 target=lambda: asyncio.run(self._aws_streaming_loop_all()),
@@ -915,10 +958,8 @@ class AudioTranslator:
             ).start()
             
         else:
-            # AWS 모드 아니면 기존 큐-배치 스레드
             threading.Thread(
                 target=lambda: asyncio.run(self.process_translation_queue()),
                 daemon=True,
                 name="translation_queue_thread"
             ).start()
-        

@@ -89,12 +89,12 @@ class FloatingSubtitleWindow(QMainWindow):
         self.korean_label = self.create_label("한국어")
         self.english_label = self.create_label("영어")
         self.chinese_label = self.create_label("중국어")
-        # self.japanese_label = self.create_label("일본어")
+        self.japanese_label = self.create_label("일본어")
 
         self.grid_layout.addWidget(self.korean_label, 0, 0)
         self.grid_layout.addWidget(self.english_label, 0, 1)
         self.grid_layout.addWidget(self.chinese_label, 1, 0)
-        # self.grid_layout.addWidget(self.japanese_label, 1, 1)
+        self.grid_layout.addWidget(self.japanese_label, 1, 1)
 
         self.grid_layout.setRowStretch(0, 1)
         self.grid_layout.setRowStretch(1, 1)
@@ -181,31 +181,55 @@ class FloatingSubtitleWindow(QMainWindow):
             ('korean', self.korean_label),
             ('english', self.english_label),
             ('chinese', self.chinese_label),
-            # ('japanese', self.japanese_label)
+            ('japanese', self.japanese_label)
         ]:
             text = translations.get(lang, '')
             label.setStyleSheet(style)
             label.setText(text)
-        
+            
             # 1) 현재 너비 저장
             current_width = self.width()
 
             # 2) 레이아웃 재계산 강제
-            self.grid_layout.invalidate()           # (Qt 6 부터 activate() 대신 invalidate())
-            self.grid_layout.activate()             # 레이아웃 재배치
+            self.grid_layout.invalidate()  
+            self.grid_layout.activate()   
 
             # 3) 전체 위젯을 최소 크기로 맞춘 뒤
             self.adjustSize()
 
             # 4) 너비는 고정하고, 높이만 새로 계산된 값으로 리사이즈
             self.resize(current_width, self.height()+50)
-    
+            
+    def update_subtitles(self, translations):
+        """자막을 업데이트하는 함수"""
+        style = "color: white; font-weight: bold; background-color: rgba(0, 0, 0, 150);"
+        for lang, label in [
+            ('korean', self.korean_label),
+            ('english', self.english_label),
+            ('chinese', self.chinese_label),
+            ('japanese', self.japanese_label)
+        ]:
+            label.setStyleSheet(style)
+            label.setText(translations.get(lang, ''))
+            label.adjustSize()  # 텍스트에 맞춰 레이블 크기 갱신
+
+        # 레이아웃 새로고침
+        self.grid_layout.invalidate()
+        self.grid_layout.activate()
+
+        # 이 창(widget) 전체를 최소 사이즈에 맞춰 조정한 뒤
+        self.adjustSize()
+        # sizeHint()가 컨텐츠를 모두 담을 수 있는 최적 크기를 반환하므로
+        new_height = self.sizeHint().height()
+        current_width = self.width()
+        # 너비는 그대로 두고, 높이는 계산된 값으로
+        self.resize(current_width, new_height)
+
     def update_font_size(self, size):
         """자막 폰트 크기 변경 함수"""
         font = QFont()
         font.setPointSize(size)
-        for label in [self.korean_label, self.english_label, self.chinese_label, 
-                    #   self.japanese_label
+        for label in [self.korean_label, self.english_label, self.chinese_label, self.japanese_label
                       ]:
             label.setFont(font)
 
@@ -226,7 +250,7 @@ class FloatingSubtitleWindow(QMainWindow):
         language_labels = {
             "korean": self.korean_label,
             "english": self.english_label,
-            # "japanese": self.japanese_label,
+            "japanese": self.japanese_label,
             "chinese": self.chinese_label
         }
 
@@ -395,7 +419,7 @@ class AudioTranslatorGUI(QMainWindow):
         language_options = {
             "korean": "한국어",
             "english": "영어",
-            # "japanese": "일본어",
+            "japanese": "일본어",
             "chinese": "중국어"
         }
 
@@ -411,7 +435,24 @@ class AudioTranslatorGUI(QMainWindow):
             
         self.selected_languages = list(self.language_checkboxes.keys())
         layout.addLayout(self.language_selection_layout)
+        
+        # # 모드 전환 버튼 추가
+        # mode_layout = QHBoxLayout()
+        # self.server_mode_btn = QPushButton("Server 모드")
+        # self.aws_mode_btn    = QPushButton("AWS 모드")
 
+        # # 클릭 시 AudioTranslator.set_translation_mode 호출
+        # self.server_mode_btn.clicked.connect(
+        #     lambda: self.translator.set_translation_mode("server")
+        # )
+        # self.aws_mode_btn.clicked.connect(
+        #     lambda: self.translator.set_translation_mode("aws")
+        # )
+
+        # mode_layout.addWidget(self.server_mode_btn)
+        # mode_layout.addWidget(self.aws_mode_btn)
+        # layout.addLayout(mode_layout)
+        
         # 작업 초기화 버튼
         self.reset_button = QPushButton("작업 초기화")
         self.reset_button.clicked.connect(self.reset_all)
@@ -745,7 +786,7 @@ class AudioTranslatorGUI(QMainWindow):
             self.subtitle_window.korean_label,
             self.subtitle_window.english_label,
             self.subtitle_window.chinese_label,
-            # self.subtitle_window.japanese_label
+            self.subtitle_window.japanese_label
         ):
             label.setStyleSheet(float_style)
 
@@ -852,7 +893,7 @@ class AudioTranslatorGUI(QMainWindow):
                 self.subtitle_window.korean_label,
                 self.subtitle_window.english_label,
                 self.subtitle_window.chinese_label,
-                # self.subtitle_window.japanese_label
+                self.subtitle_window.japanese_label
             ]:
                 label.setStyleSheet(default_style)
 
